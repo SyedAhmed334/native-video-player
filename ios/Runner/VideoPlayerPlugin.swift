@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import AVFoundation
 import AVKit
+import Network
 
 /**
  * VideoPlayerPlugin - Complete AVPlayer integration for Flutter
@@ -50,6 +51,16 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var isPlaying: Bool = false
     private var currentUrl: String?
     private var timeObserver: Any?
+    
+    // Network monitoring
+    private var networkMonitor: NWPathMonitor?
+    private var networkQueue = DispatchQueue(label: "NetworkMonitor")
+    private var isNetworkAvailable: Bool = true
+    private var currentNetworkType: String = "unknown"
+    
+    // Picture-in-Picture
+    private var pipController: AVPictureInPictureController?
+    private var pipPossibleObservation: NSKeyValueObservation?
     
     // MARK: - Plugin Registration
     
@@ -189,6 +200,12 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             }
             enableOfflineMode(localPath: localPath, result: result)
             
+        case "enterPiP":
+            enterPictureInPicture(result: result)
+            
+        case "getNetworkStatus":
+            getNetworkStatus(result: result)
+            
         case "dispose":
             disposePlayer(result: result)
             
@@ -201,6 +218,9 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     
     private func initializePlayer(url: String, result: @escaping FlutterResult) {
         currentUrl = url
+        
+        // Configure Audio Session first
+        configureAudioSession()
         
         guard let videoUrl = URL(string: url) else {
             result(FlutterError(code: "INVALID_URL", message: "Invalid URL", details: nil))
@@ -225,6 +245,7 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         
         // Add observers
         addPlayerObservers()
+        addAudioInterruptionObserver()
         
         // Create texture
         videoTexture = FlutterVideoTexture(player: player!)
@@ -233,7 +254,24 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         // Setup display link
         setupDisplayLink()
         
+        // Setup network monitoring
+        setupNetworkMonitoring()
+        
+        // Setup PiP (create player layer for PiP support)
+        playerLayer = AVPlayerLayer(player: player)
+        setupPictureInPicture()
+        
         result(["textureId": textureId!])
+    }
+    
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            print("[VideoPlayerPlugin] Failed to configure audio session: \(error)")
+        }
     }
     
     // MARK: - Display Link
@@ -465,10 +503,14 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private func disposePlayer(result: @escaping FlutterResult) {
         stopPositionUpdates()
         removePlayerObservers()
+        removeAudioInterruptionObserver()
         
         player?.pause()
         player = nil
+        player = nil
         playerItem = nil
+        
+        playerLayer?.removeFromSuperlayer()
         playerLayer = nil
         
         if let id = textureId {
@@ -479,6 +521,14 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         displayLink?.invalidate()
         displayLink = nil
         videoTexture = nil
+        
+        // Clean up network monitoring
+        stopNetworkMonitoring()
+        
+        // Clean up PiP
+        pipPossibleObservation?.invalidate()
+        pipPossibleObservation = nil
+        pipController = nil
         
         result(nil)
     }
@@ -561,6 +611,50 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             name: .AVPlayerItemDidPlayToEndTime,
             object: playerItem
         )
+            object: playerItem
+        )
+    }
+    
+    private func addAudioInterruptionObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+    
+    private func removeAudioInterruptionObserver() {
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+    }
+    
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        
+        switch type {
+        case .began:
+            // Interruption began (e.g. phone call) - pause playback
+            print("[VideoPlayerPlugin] Audio interruption began - pausing")
+            player?.pause()
+            sendEvent(["playbackState": "paused"])
+            
+        case .ended:
+            // Interruption ended - check if we should resume
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            
+            if options.contains(.shouldResume) {
+                print("[VideoPlayerPlugin] Audio interruption ended - resuming")
+                player?.play()
+                sendEvent(["playbackState": "playing"])
+            }
+        @unknown default:
+            break
+        }
     }
     
     private func removePlayerObservers() {
@@ -656,6 +750,137 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         DispatchQueue.main.async { [weak self] in
             self?.eventSink?(event)
         }
+    }
+    
+    // MARK: - Network Monitoring
+    
+    private func setupNetworkMonitoring() {
+        networkMonitor = NWPathMonitor()
+        
+        networkMonitor?.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
+            
+            let wasConnected = self.isNetworkAvailable
+            self.isNetworkAvailable = path.status == .satisfied
+            
+            // Determine network type
+            if path.usesInterfaceType(.wifi) {
+                self.currentNetworkType = "wifi"
+            } else if path.usesInterfaceType(.cellular) {
+                self.currentNetworkType = "cellular"
+            } else if path.usesInterfaceType(.wiredEthernet) {
+                self.currentNetworkType = "ethernet"
+            } else if path.status == .satisfied {
+                self.currentNetworkType = "other"
+            } else {
+                self.currentNetworkType = "none"
+            }
+            
+            // Send event to Flutter
+            self.sendEvent([
+                "event": "networkChanged",
+                "isConnected": self.isNetworkAvailable,
+                "type": self.currentNetworkType
+            ])
+            
+            // Log network changes
+            if wasConnected != self.isNetworkAvailable {
+                print("[VideoPlayerPlugin] Network \(self.isNetworkAvailable ? "restored" : "lost"): \(self.currentNetworkType)")
+            }
+        }
+        
+        networkMonitor?.start(queue: networkQueue)
+    }
+    
+    private func stopNetworkMonitoring() {
+        networkMonitor?.cancel()
+        networkMonitor = nil
+    }
+    
+    private func getNetworkStatus(result: @escaping FlutterResult) {
+        result([
+            "isConnected": isNetworkAvailable,
+            "type": currentNetworkType
+        ])
+    }
+    
+    // MARK: - Picture-in-Picture
+    
+    private func setupPictureInPicture() {
+        if !AVPictureInPictureController.isPictureInPictureSupported() {
+            print("[VideoPlayerPlugin] Warning: Device claims PiP is not supported, attempting anyway...")
+        }
+        
+        guard let playerLayer = playerLayer else {
+            print("[VideoPlayerPlugin] PlayerLayer not available for PiP")
+            return
+        }
+        
+        // Ensure playerLayer is attached to the view hierarchy
+        // This is CRITICAL for PiP to work
+        if let rootViewController = UIApplication.shared.keyWindow?.rootViewController {
+            // We add it to the background so it doesn't interfere with Flutter rendering
+            // but is still part of the view hierarchy
+            // Must have non-zero frame
+            playerLayer.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+            rootViewController.view.layer.addSublayer(playerLayer)
+        }
+        
+        pipController = AVPictureInPictureController(playerLayer: playerLayer)
+        pipController?.delegate = self
+        
+        // Observe when PiP becomes possible
+        pipPossibleObservation = pipController?.observe(\.isPictureInPicturePossible, options: [.new]) { [weak self] _, change in
+            if let isPossible = change.newValue {
+                print("[VideoPlayerPlugin] PiP possible: \(isPossible)")
+            }
+        }
+    }
+    
+    private func enterPictureInPicture(result: @escaping FlutterResult) {
+        // Create player layer if not exists
+        if playerLayer == nil, let player = player {
+            playerLayer = AVPlayerLayer(player: player)
+            setupPictureInPicture()
+        }
+        
+        guard let pipController = pipController else {
+            result(FlutterError(code: "PIP_NOT_READY", message: "PiP controller not initialized", details: nil))
+            return
+        }
+        
+        if pipController.isPictureInPicturePossible {
+            pipController.startPictureInPicture()
+            result(true)
+        } else {
+            result(FlutterError(code: "PIP_NOT_POSSIBLE", message: "PiP not possible at this time", details: nil))
+        }
+    }
+}
+
+// MARK: - AVPictureInPictureControllerDelegate
+
+extension VideoPlayerPlugin: AVPictureInPictureControllerDelegate {
+    public func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        sendEvent([
+            "event": "pipChanged",
+            "isActive": true
+        ])
+    }
+    
+    public func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        sendEvent([
+            "event": "pipChanged",
+            "isActive": false
+        ])
+    }
+    
+    public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
+        print("[VideoPlayerPlugin] PiP failed to start: \(error.localizedDescription)")
+        sendEvent([
+            "event": "pipError",
+            "message": error.localizedDescription
+        ])
     }
 }
 

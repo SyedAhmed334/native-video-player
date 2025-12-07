@@ -41,6 +41,13 @@ class NativeVideoPlayer {
   int _selectedSubtitleIndex = -1;
   bool _isAutoQuality = true; // Start with auto quality enabled
 
+  // Network state
+  bool _isNetworkAvailable = true;
+  String _networkType = 'unknown';
+
+  // PiP state
+  bool _isPiPActive = false;
+
   // Event subscription
   StreamSubscription? _eventSubscription;
 
@@ -58,6 +65,8 @@ class NativeVideoPlayer {
   Function(int index)? onSubtitleChanged;
   Function(String text)? onSubtitleText;
   Function(int attempt, int maxRetries)? onRetrying; // Retry callback
+  Function(bool isConnected, String type)? onNetworkChanged; // Network callback
+  Function(bool isActive)? onPiPChanged; // PiP callback
 
   // Getters
   int? get textureId => _textureId;
@@ -77,6 +86,9 @@ class NativeVideoPlayer {
   bool get isAutoQuality => _isAutoQuality;
   bool get isRetrying => _isRetrying;
   int get retryCount => _retryCount;
+  bool get isNetworkAvailable => _isNetworkAvailable;
+  String get networkType => _networkType;
+  bool get isPiPActive => _isPiPActive;
 
   /// Initialize the player with a video URL
   /// Supports HLS (.m3u8), DASH (.mpd), and MP4 formats
@@ -427,6 +439,31 @@ class NativeVideoPlayer {
     onTracksLoaded?.call();
   }
 
+  /// Enter Picture-in-Picture mode
+  Future<bool> enterPiP() async {
+    try {
+      final result = await _methodChannel.invokeMethod('enterPiP');
+      return result == true;
+    } catch (e) {
+      log('[NativePlayer] Failed to enter PiP: $e');
+      onError?.call('PiP not available: $e');
+      return false;
+    }
+  }
+
+  /// Get current network status
+  Future<Map<String, dynamic>> getNetworkStatus() async {
+    try {
+      final result = await _methodChannel.invokeMethod('getNetworkStatus');
+      _isNetworkAvailable = result['isConnected'] as bool;
+      _networkType = result['type'] as String;
+      return {'isConnected': _isNetworkAvailable, 'type': _networkType};
+    } catch (e) {
+      log('[NativePlayer] Failed to get network status: $e');
+      return {'isConnected': true, 'type': 'unknown'};
+    }
+  }
+
   /// Start listening to player events
   void _startEventListener() {
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
@@ -502,6 +539,19 @@ class NativeVideoPlayer {
     } else if (eventType == 'subtitleText') {
       // Subtitle text update
       onSubtitleText?.call(event['text'] as String);
+    } else if (eventType == 'networkChanged') {
+      // Network status changed
+      _isNetworkAvailable = event['isConnected'] as bool;
+      _networkType = event['type'] as String;
+      log(
+        "[NativePlayer] Network changed: $_networkType (connected: $_isNetworkAvailable)",
+      );
+      onNetworkChanged?.call(_isNetworkAvailable, _networkType);
+    } else if (eventType == 'pipChanged') {
+      // Picture-in-Picture state changed
+      _isPiPActive = event['isActive'] as bool;
+      log("[NativePlayer] PiP changed: $_isPiPActive");
+      onPiPChanged?.call(_isPiPActive);
     }
   }
 }

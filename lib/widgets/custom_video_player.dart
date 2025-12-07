@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import '../controllers/video_player_controller.dart';
 
-/// Custom video player widget with Netflix-smooth controls using GetX
+/// Custom video player widget with Netflix-smooth controls
 /// Handles app lifecycle (pause on background) and graceful disposal
 class CustomVideoPlayer extends StatefulWidget {
   final String url;
@@ -24,18 +23,29 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // Initialize the controller with a unique tag based on the URL
-    controller = Get.put(
-      VideoPlayerController(url: widget.url, autoPlay: widget.autoPlay),
-      tag: widget.url,
+    // Initialize the controller
+    controller = VideoPlayerController(
+      url: widget.url,
+      autoPlay: widget.autoPlay,
     );
+    controller.initialize();
+
+    // Set up UI callbacks
+    controller.onError = (message) {
+      if (mounted) {
+        debugPrint('Error: $message');
+      }
+    };
+
+    controller.onNetworkChanged = (isConnected, type) {
+      debugPrint('Network changed: $isConnected, $type');
+    };
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    // Gracefully dispose the controller when navigating away
-    Get.delete<VideoPlayerController>(tag: widget.url);
+    controller.dispose();
     super.dispose();
   }
 
@@ -46,6 +56,10 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
     switch (state) {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
+        // Don't pause if we're in Picture-in-Picture mode
+        if (controller.isPiPActive.value) {
+          return;
+        }
         // App going to background - pause video
         _wasPlayingBeforeBackground = controller.isPlaying.value;
         if (_wasPlayingBeforeBackground) {
@@ -81,202 +95,255 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
           child: Stack(
             children: [
               // Video texture
-              Obx(() {
-                if (controller.isInitialized.value &&
-                    controller.textureId.value != null) {
-                  return Center(
-                    child: AspectRatio(
-                      aspectRatio: 16 / 9,
-                      child: SizedBox.expand(
-                        child: Texture(textureId: controller.textureId.value!),
-                      ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
-
-              // Subtitle Overlay
-              Obx(() {
-                if (controller.subtitleText.value.isNotEmpty) {
-                  return Align(
-                    alignment: const Alignment(0.0, 0.86),
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 20),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      color: Colors.black54,
-                      child: Text(
-                        controller.subtitleText.value,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
-
-              // Loading indicator
-              Obx(() {
-                if (controller.isLoading.value ||
-                    controller.isBuffering.value ||
-                    !controller.isInitialized.value) {
-                  return Container(
-                    color: Colors.black87,
-                    child: const Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(color: Colors.red),
-                          SizedBox(height: 16),
-                          Text(
-                            'Loading...',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 14,
+              ValueListenableBuilder<bool>(
+                valueListenable: controller.isInitialized,
+                builder: (context, isInitialized, _) {
+                  return ValueListenableBuilder<int?>(
+                    valueListenable: controller.textureId,
+                    builder: (context, textureId, _) {
+                      if (isInitialized && textureId != null) {
+                        return Center(
+                          child: AspectRatio(
+                            aspectRatio: 16 / 9,
+                            child: SizedBox.expand(
+                              child: Texture(textureId: textureId),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
+                        );
+                      }
+                      return const SizedBox.shrink();
+                    },
                   );
-                }
-                return const SizedBox.shrink();
-              }),
+                },
+              ),
 
-              // Controls overlay (BELOW double-tap zones so it doesn't block gestures)
-              Obx(() {
-                if (controller.isInitialized.value) {
-                  return IgnorePointer(
-                    ignoring:
-                        true, // Always ignore pointer - gestures handled by double-tap zones
-                    child: AnimatedOpacity(
-                      opacity: controller.showControls.value ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 300),
+              // Subtitle Overlay
+              ValueListenableBuilder<String>(
+                valueListenable: controller.subtitleText,
+                builder: (context, text, _) {
+                  if (text.isNotEmpty) {
+                    return Align(
+                      alignment: const Alignment(0.0, 0.86),
                       child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 20),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
                         color: Colors.black54,
+                        child: Text(
+                          text,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
+
+              // Loading indicator
+              AnimatedBuilder(
+                animation: Listenable.merge([
+                  controller.isLoading,
+                  controller.isBuffering,
+                  controller.isInitialized,
+                ]),
+                builder: (context, _) {
+                  if (controller.isLoading.value ||
+                      controller.isBuffering.value ||
+                      !controller.isInitialized.value) {
+                    return Container(
+                      color: Colors.black87,
+                      child: const Center(
                         child: Column(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            _buildTopBar(controller),
-                            const Spacer(),
-                            _buildBottomControls(controller),
+                            CircularProgressIndicator(color: Colors.red),
+                            SizedBox(height: 16),
+                            Text(
+                              'Loading...',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 14,
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
+
+              // Controls overlay (BELOW double-tap zones so it doesn't block gestures)
+              ValueListenableBuilder<bool>(
+                valueListenable: controller.isInitialized,
+                builder: (context, isInitialized, _) {
+                  if (isInitialized) {
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: controller.showControls,
+                      builder: (context, showControls, _) {
+                        return IgnorePointer(
+                          ignoring:
+                              true, // Always ignore pointer - gestures handled by double-tap zones
+                          child: AnimatedOpacity(
+                            opacity: showControls ? 1.0 : 0.0,
+                            duration: const Duration(milliseconds: 300),
+                            child: Container(
+                              color: Colors.black54,
+                              child: Column(
+                                children: [
+                                  _buildTopBar(context, controller),
+                                  const Spacer(),
+                                  _buildBottomControls(context, controller),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
 
               // Double-tap seek zones (on top for gesture detection)
-              Obx(() {
-                if (controller.isInitialized.value) {
-                  return Stack(
-                    children: [
-                      Row(
-                        children: [
-                          // Left zone - backward seek
-                          Expanded(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onDoubleTap: () =>
-                                  controller.doubleTapSeekBackward(seconds: 10),
-                              onTap: controller.toggleControls,
-                              child: const SizedBox.expand(),
+              ValueListenableBuilder<bool>(
+                valueListenable: controller.isInitialized,
+                builder: (context, isInitialized, _) {
+                  if (isInitialized) {
+                    return Stack(
+                      children: [
+                        Row(
+                          children: [
+                            // Left zone - backward seek
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onDoubleTap: () => controller
+                                    .doubleTapSeekBackward(seconds: 10),
+                                onTap: controller.toggleControls,
+                                child: const SizedBox.expand(),
+                              ),
                             ),
-                          ),
-                          // Right zone - forward seek
-                          Expanded(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onDoubleTap: () =>
-                                  controller.doubleTapSeekForward(seconds: 10),
-                              onTap: controller.toggleControls,
-                              child: const SizedBox.expand(),
+                            // Right zone - forward seek
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onDoubleTap: () => controller
+                                    .doubleTapSeekForward(seconds: 10),
+                                onTap: controller.toggleControls,
+                                child: const SizedBox.expand(),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      // Control buttons that need to be tappable
-                      if (controller.showControls.value) ...[
-                        // Top bar buttons
-                        Positioned(
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          child: _buildTopBar(controller),
+                          ],
                         ),
-                        // Center controls
-                        Positioned.fill(
-                          child: Center(
-                            child: _buildCenterControls(controller),
-                          ),
-                        ),
-                        // Bottom controls
-                        Positioned(
-                          bottom: 0,
-                          left: 0,
-                          right: 0,
-                          child: _buildBottomControls(controller),
+                        // Control buttons that need to be tappable
+                        ValueListenableBuilder<bool>(
+                          valueListenable: controller.showControls,
+                          builder: (context, showControls, _) {
+                            if (showControls) {
+                              return Stack(
+                                children: [
+                                  // Top bar buttons
+                                  Positioned(
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: _buildTopBar(context, controller),
+                                  ),
+                                  // Center controls
+                                  Positioned.fill(
+                                    child: Center(
+                                      child: _buildCenterControls(controller),
+                                    ),
+                                  ),
+                                  // Bottom controls
+                                  Positioned(
+                                    bottom: 0,
+                                    left: 0,
+                                    right: 0,
+                                    child: _buildBottomControls(
+                                      context,
+                                      controller,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            }
+                            return const SizedBox.shrink();
+                          },
                         ),
                       ],
-                    ],
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
 
               // Backward seek animation overlay (left side)
-              Obx(() {
-                if (controller.isDoubleTapSeekingBackward.value) {
-                  return Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: MediaQuery.of(context).size.width * 0.4,
-                    child: IgnorePointer(
-                      child: _DoubleTapSeekAnimation(
-                        key: ValueKey(
-                          'backward_${controller.doubleTapAnimationKey.value}',
+              ValueListenableBuilder<bool>(
+                valueListenable: controller.isDoubleTapSeekingBackward,
+                builder: (context, isSeekingBackward, _) {
+                  if (isSeekingBackward) {
+                    return Positioned(
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: MediaQuery.of(context).size.width * 0.4,
+                      child: IgnorePointer(
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: controller.doubleTapAnimationKey,
+                          builder: (context, key, _) {
+                            return _DoubleTapSeekAnimation(
+                              key: ValueKey('backward_$key'),
+                              isForward: false,
+                              seconds: controller.doubleTapSeekSeconds.value,
+                            );
+                          },
                         ),
-                        isForward: false,
-                        seconds: controller.doubleTapSeekSeconds.value,
                       ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
 
               // Forward seek animation overlay (right side)
-              Obx(() {
-                if (controller.isDoubleTapSeekingForward.value) {
-                  return Positioned(
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: MediaQuery.of(context).size.width * 0.4,
-                    child: IgnorePointer(
-                      child: _DoubleTapSeekAnimation(
-                        key: ValueKey(
-                          'forward_${controller.doubleTapAnimationKey.value}',
+              ValueListenableBuilder<bool>(
+                valueListenable: controller.isDoubleTapSeekingForward,
+                builder: (context, isSeekingForward, _) {
+                  if (isSeekingForward) {
+                    return Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: MediaQuery.of(context).size.width * 0.4,
+                      child: IgnorePointer(
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: controller.doubleTapAnimationKey,
+                          builder: (context, key, _) {
+                            return _DoubleTapSeekAnimation(
+                              key: ValueKey('forward_$key'),
+                              isForward: true,
+                              seconds: controller.doubleTapSeekSeconds.value,
+                            );
+                          },
                         ),
-                        isForward: true,
-                        seconds: controller.doubleTapSeekSeconds.value,
                       ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
             ],
           ),
         ),
@@ -284,35 +351,40 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
     );
   }
 
-  Widget _buildTopBar(VideoPlayerController controller) {
+  Widget _buildTopBar(BuildContext context, VideoPlayerController controller) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Row(
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back, color: Colors.white),
-            onPressed: () => Get.back(),
+            onPressed: () => Navigator.of(context).pop(),
           ),
           const Spacer(),
           // Quality selector
           IconButton(
             icon: const Icon(Icons.hd, color: Colors.white),
-            onPressed: controller.showQualitySelector,
+            onPressed: () => controller.showQualitySelector(context),
           ),
           // Audio track selector
           IconButton(
             icon: const Icon(Icons.audiotrack, color: Colors.white),
-            onPressed: controller.showAudioTrackSelector,
+            onPressed: () => controller.showAudioTrackSelector(context),
           ),
           // Subtitle selector
           IconButton(
             icon: const Icon(Icons.subtitles, color: Colors.white),
-            onPressed: controller.showSubtitleSelector,
+            onPressed: () => controller.showSubtitleSelector(context),
+          ),
+          // Picture-in-Picture
+          IconButton(
+            icon: const Icon(Icons.picture_in_picture, color: Colors.white),
+            onPressed: () => controller.enterPiP(context),
           ),
           // Settings
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
-            onPressed: controller.showSettings,
+            onPressed: () => controller.showSettings(context),
           ),
         ],
       ),
@@ -330,15 +402,18 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
         ),
         const SizedBox(width: 40),
         // Play/Pause
-        Obx(
-          () => IconButton(
-            icon: Icon(
-              controller.isPlaying.value ? Icons.pause : Icons.play_arrow,
-              color: Colors.white,
-              size: 60,
-            ),
-            onPressed: controller.togglePlayPause,
-          ),
+        ValueListenableBuilder<bool>(
+          valueListenable: controller.isPlaying,
+          builder: (context, isPlaying, _) {
+            return IconButton(
+              icon: Icon(
+                isPlaying ? Icons.pause : Icons.play_arrow,
+                color: Colors.white,
+                size: 60,
+              ),
+              onPressed: controller.togglePlayPause,
+            );
+          },
         ),
         const SizedBox(width: 40),
         // Forward 10s
@@ -350,7 +425,10 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
     );
   }
 
-  Widget _buildBottomControls(VideoPlayerController controller) {
+  Widget _buildBottomControls(
+    BuildContext context,
+    VideoPlayerController controller,
+  ) {
     return Column(
       children: [
         // Progress bar
@@ -358,58 +436,70 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           child: Row(
             children: [
-              Obx(
-                () => Text(
-                  controller.formatDuration(controller.position.value),
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                ),
+              ValueListenableBuilder<Duration>(
+                valueListenable: controller.position,
+                builder: (context, position, _) {
+                  return Text(
+                    controller.formatDuration(position),
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  );
+                },
               ),
               Expanded(
-                child: Obx(
-                  () => Slider(
-                    value: controller.duration.value.inMilliseconds > 0
-                        ? (controller.position.value.inMilliseconds /
-                                  controller.duration.value.inMilliseconds)
-                              .clamp(0.0, 1.0)
-                        : 0.0,
+                child: AnimatedBuilder(
+                  animation: Listenable.merge([
+                    controller.position,
+                    controller.duration,
+                  ]),
+                  builder: (context, _) {
+                    return Slider(
+                      value: controller.duration.value.inMilliseconds > 0
+                          ? (controller.position.value.inMilliseconds /
+                                    controller.duration.value.inMilliseconds)
+                                .clamp(0.0, 1.0)
+                          : 0.0,
 
-                    /// When user starts dragging
-                    onChangeStart: (value) {
-                      controller.isSeeking.value = true;
-                    },
+                      /// When user starts dragging
+                      onChangeStart: (value) {
+                        controller.isSeeking.value = true;
+                      },
 
-                    /// When slider value is changing - update UI only, no native seek
-                    onChanged: (value) {
-                      // Update position locally for immediate UI feedback
-                      controller.position.value = Duration(
-                        milliseconds:
-                            (value * controller.duration.value.inMilliseconds)
-                                .toInt(),
-                      );
-                    },
+                      /// When slider value is changing - update UI only, no native seek
+                      onChanged: (value) {
+                        // Update position locally for immediate UI feedback
+                        controller.position.value = Duration(
+                          milliseconds:
+                              (value * controller.duration.value.inMilliseconds)
+                                  .toInt(),
+                        );
+                      },
 
-                    /// When user stops dragging - perform actual seek
-                    onChangeEnd: (value) {
-                      final position = Duration(
-                        milliseconds:
-                            (value * controller.duration.value.inMilliseconds)
-                                .toInt(),
-                      );
-                      controller.seekTo(position);
-                      controller.isSeeking.value = false;
-                    },
+                      /// When user stops dragging - perform actual seek
+                      onChangeEnd: (value) {
+                        final position = Duration(
+                          milliseconds:
+                              (value * controller.duration.value.inMilliseconds)
+                                  .toInt(),
+                        );
+                        controller.seekTo(position);
+                        controller.isSeeking.value = false;
+                      },
 
-                    activeColor: Colors.red,
-                    inactiveColor: Colors.white30,
-                  ),
+                      activeColor: Colors.red,
+                      inactiveColor: Colors.white30,
+                    );
+                  },
                 ),
               ),
 
-              Obx(
-                () => Text(
-                  controller.formatDuration(controller.duration.value),
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                ),
+              ValueListenableBuilder<Duration>(
+                valueListenable: controller.duration,
+                builder: (context, duration, _) {
+                  return Text(
+                    controller.formatDuration(duration),
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  );
+                },
               ),
             ],
           ),
@@ -422,61 +512,67 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
               // Volume
               IconButton(
                 icon: const Icon(Icons.volume_up, color: Colors.white),
-                onPressed: controller.showVolumeSlider,
+                onPressed: () => controller.showVolumeSlider(context),
               ),
               const Spacer(),
               // Current quality indicator
-              Obx(() {
-                // Show "Auto" when auto quality is enabled
-                if (controller.isAutoQuality.value) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text(
-                      'Auto',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
+              AnimatedBuilder(
+                animation: Listenable.merge([
+                  controller.isAutoQuality,
+                  controller.selectedQualityIndex,
+                  controller.availableQualities,
+                ]),
+                builder: (context, _) {
+                  // Show "Auto" when auto quality is enabled
+                  if (controller.isAutoQuality.value) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
                       ),
-                    ),
-                  );
-                }
-                // Show selected quality label
-                if (controller.selectedQualityIndex.value >= 0 &&
-                    controller.selectedQualityIndex.value <
-                        controller.availableQualities.length) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      controller
-                          .availableQualities[controller
-                              .selectedQualityIndex
-                              .value]
-                          .label,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(4),
                       ),
-                    ),
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+                      child: const Text(
+                        'Auto',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }
+                  // Show selected quality label
+                  if (controller.selectedQualityIndex.value >= 0 &&
+                      controller.selectedQualityIndex.value <
+                          controller.availableQualities.value.length) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        controller
+                            .availableQualities
+                            .value[controller.selectedQualityIndex.value]
+                            .label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+              ),
             ],
           ),
         ),
@@ -566,12 +662,8 @@ class _DoubleTapSeekAnimationState extends State<_DoubleTapSeekAnimation>
                           : Alignment.centerRight,
                       radius: _rippleAnimation.value,
                       colors: [
-                        Colors.white.withValues(
-                          alpha: 0.3 * _fadeAnimation.value,
-                        ),
-                        Colors.white.withValues(
-                          alpha: 0.1 * _fadeAnimation.value,
-                        ),
+                        Colors.white.withOpacity(0.3 * _fadeAnimation.value),
+                        Colors.white.withOpacity(0.1 * _fadeAnimation.value),
                         Colors.transparent,
                       ],
                       stops: const [0.0, 0.5, 1.0],

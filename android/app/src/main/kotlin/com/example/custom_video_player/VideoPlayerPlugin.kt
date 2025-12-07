@@ -1,10 +1,19 @@
 package com.example.custom_video_player
 
+import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.Surface
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -50,12 +59,19 @@ class VideoPlayerPlugin(
     private val eventChannel: EventChannel
 ) : MethodChannel.MethodCallHandler {
 
+
     companion object {
         private const val METHOD_CHANNEL = "native_video_player/method"
         private const val EVENT_CHANNEL = "native_video_player/event"
         private const val TAG = "VideoPlayerPlugin"
 
         fun registerWith(flutterEngine: FlutterEngine, context: Context) {
+            registerWithActivity(flutterEngine, context as? Activity ?: (context as android.content.ContextWrapper).baseContext as? Activity)
+        }
+        
+        fun registerWithActivity(flutterEngine: FlutterEngine, activity: Activity?): VideoPlayerPlugin {
+            val context = activity ?: throw IllegalArgumentException("Activity required")
+            
             val methodChannel = MethodChannel(
                 flutterEngine.dartExecutor.binaryMessenger,
                 METHOD_CHANNEL
@@ -65,12 +81,17 @@ class VideoPlayerPlugin(
                 EVENT_CHANNEL
             )
 
-            VideoPlayerPlugin(
+            val plugin = VideoPlayerPlugin(
                 context,
                 flutterEngine.renderer,
                 methodChannel,
                 eventChannel
             )
+            
+            // Set activity for PiP support
+            plugin.setActivity(activity)
+            
+            return plugin
         }
     }
 
@@ -98,6 +119,16 @@ class VideoPlayerPlugin(
     private var isBuffering = false
     private var currentUrl: String? = null
     private var externalSubtitleSource: MediaSource? = null
+    
+    // Network monitoring
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var isNetworkAvailable = true
+    private var currentNetworkType = "unknown"
+    
+    // PiP state
+    private var activity: Activity? = null
+    private var isPiPActive = false
 
     init {
         methodChannel.setMethodCallHandler(this)
@@ -162,6 +193,8 @@ class VideoPlayerPlugin(
                     val localPath = call.argument<String>("localPath")!!
                     enableOfflineMode(localPath, result)
                 }
+                "enterPiP" -> enterPictureInPicture(result)
+                "getNetworkStatus" -> getNetworkStatus(result)
                 "dispose" -> disposePlayer(result)
                 else -> result.notImplemented()
             }
@@ -211,10 +244,17 @@ class VideoPlayerPlugin(
                 )
                 .build()
 
+            // Configure AudioAttributes for audio focus handling
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build()
+
             // Build ExoPlayer
             player = ExoPlayer.Builder(context)
                 .setTrackSelector(trackSelector!!)
                 .setLoadControl(loadControl)
+                .setAudioAttributes(audioAttributes, true) // handleAudioFocus = true
                 .build().apply {
                     // Set video surface
                     setVideoSurface(surface)
@@ -836,6 +876,160 @@ class VideoPlayerPlugin(
             mainHandler.post { sink.success(event) }
         }
     }
+    
+    // ========== NETWORK MONITORING ==========
+    
+    /** Set up network monitoring to detect connectivity changes */
+    fun setupNetworkMonitoring() {
+        connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post {
+                    val wasUnavailable = !isNetworkAvailable
+                    isNetworkAvailable = true
+                    updateNetworkType()
+                    
+                    sendEvent(mapOf(
+                        "event" to "networkChanged",
+                        "isConnected" to true,
+                        "type" to currentNetworkType
+                    ))
+                    
+                    // If was disconnected, notify for potential retry
+                    if (wasUnavailable) {
+                        android.util.Log.d(TAG, "Network restored: $currentNetworkType")
+                    }
+                }
+            }
+            
+            override fun onLost(network: Network) {
+                mainHandler.post {
+                    isNetworkAvailable = false
+                    currentNetworkType = "none"
+                    
+                    sendEvent(mapOf(
+                        "event" to "networkChanged",
+                        "isConnected" to false,
+                        "type" to "none"
+                    ))
+                    
+                    android.util.Log.d(TAG, "Network lost")
+                }
+            }
+            
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                mainHandler.post {
+                    updateNetworkType()
+                    sendEvent(mapOf(
+                        "event" to "networkChanged",
+                        "isConnected" to true,
+                        "type" to currentNetworkType
+                    ))
+                }
+            }
+        }
+        
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        
+        connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+        
+        // Get initial network state
+        updateNetworkType()
+    }
+    
+    /** Stop network monitoring */
+    private fun stopNetworkMonitoring() {
+        networkCallback?.let { callback ->
+            try {
+                connectivityManager?.unregisterNetworkCallback(callback)
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "Error unregistering network callback: ${e.message}")
+            }
+        }
+        networkCallback = null
+    }
+    
+    /** Update current network type */
+    private fun updateNetworkType() {
+        val activeNetwork = connectivityManager?.activeNetwork
+        val capabilities = connectivityManager?.getNetworkCapabilities(activeNetwork)
+        
+        currentNetworkType = when {
+            capabilities == null -> "none"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+        
+        isNetworkAvailable = capabilities != null
+    }
+    
+    /** Get current network status */
+    private fun getNetworkStatus(result: MethodChannel.Result) {
+        updateNetworkType()
+        result.success(mapOf(
+            "isConnected" to isNetworkAvailable,
+            "type" to currentNetworkType
+        ))
+    }
+    
+    // ========== PICTURE-IN-PICTURE ==========
+    
+    /** Set activity reference for PiP mode (call from MainActivity) */
+    fun setActivity(activity: Activity) {
+        this.activity = activity
+        setupNetworkMonitoring()
+    }
+    
+    /** Enter Picture-in-Picture mode */
+    private fun enterPictureInPicture(result: MethodChannel.Result) {
+        val currentActivity = activity
+        
+        if (currentActivity == null) {
+            result.error("NO_ACTIVITY", "Activity not available for PiP", null)
+            return
+        }
+        
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            result.error("UNSUPPORTED", "PiP requires Android 8.0 (API 26) or higher", null)
+            return
+        }
+        
+        try {
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .build()
+            
+            val success = currentActivity.enterPictureInPictureMode(params)
+            
+            if (success) {
+                isPiPActive = true
+                sendEvent(mapOf(
+                    "event" to "pipChanged",
+                    "isActive" to true
+                ))
+                result.success(true)
+            } else {
+                result.error("PIP_FAILED", "Failed to enter PiP mode", null)
+            }
+        } catch (e: Exception) {
+            result.error("PIP_ERROR", e.message, null)
+        }
+    }
+    
+    /** Called when PiP mode changes (from MainActivity) */
+    fun onPiPModeChanged(isInPiP: Boolean) {
+        isPiPActive = isInPiP
+        sendEvent(mapOf(
+            "event" to "pipChanged",
+            "isActive" to isInPiP
+        ))
+    }
+
 
     // Data classes for track information
     data class VideoQualityInfo(

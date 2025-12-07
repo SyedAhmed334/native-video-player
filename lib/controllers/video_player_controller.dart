@@ -1,13 +1,12 @@
 import 'dart:developer';
 
-import 'package:get/get.dart';
+import 'package:flutter/material.dart';
 import '../services/native_video_player.dart';
 import '../models/video_track_models.dart';
-import 'package:flutter/material.dart';
 
 /// Controller for the Custom Video Player
-/// Manages all video player state with reactive observables
-class VideoPlayerController extends GetxController {
+/// Manages all video player state with ValueNotifiers
+class VideoPlayerController {
   final String url;
   final bool autoPlay;
 
@@ -18,65 +17,100 @@ class VideoPlayerController extends GetxController {
   NativeVideoPlayer get nativePlayer => _nativePlayer;
 
   // Reactive state variables
-  final isInitialized = false.obs;
-  final initialIndexAssigned = false.obs;
-  final isLoading = true.obs;
-  final isPlaying = false.obs;
-  final isBuffering = false.obs;
-  final showControls = true.obs;
-  final subtitleText = ''.obs;
+  final isInitialized = ValueNotifier<bool>(false);
+  final initialIndexAssigned = ValueNotifier<bool>(false);
+  final isLoading = ValueNotifier<bool>(true);
+  final isPlaying = ValueNotifier<bool>(false);
+  final isBuffering = ValueNotifier<bool>(false);
+  final showControls = ValueNotifier<bool>(true);
+  final subtitleText = ValueNotifier<String>('');
 
   // Position and duration
-  final position = Duration.zero.obs;
-  final bufferedPosition = Duration.zero.obs;
-  final duration = Duration.zero.obs;
+  final position = ValueNotifier<Duration>(Duration.zero);
+  final bufferedPosition = ValueNotifier<Duration>(Duration.zero);
+  final duration = ValueNotifier<Duration>(Duration.zero);
 
   // Track lists
-  final availableQualities = <VideoQuality>[].obs;
-  final availableAudioTracks = <AudioTrack>[].obs;
-  final availableSubtitles = <SubtitleTrack>[].obs;
+  final availableQualities = ValueNotifier<List<VideoQuality>>([]);
+  final availableAudioTracks = ValueNotifier<List<AudioTrack>>([]);
+  final availableSubtitles = ValueNotifier<List<SubtitleTrack>>([]);
 
   // Selected track indices
-  final selectedQualityIndex = (-1).obs;
-  final selectedAudioIndex = (-1).obs;
-  final selectedSubtitleIndex = (-1).obs;
+  final selectedQualityIndex = ValueNotifier<int>(-1);
+  final selectedAudioIndex = ValueNotifier<int>(-1);
+  final selectedSubtitleIndex = ValueNotifier<int>(-1);
 
   // Volume
-  final volume = 1.0.obs;
+  final volume = ValueNotifier<double>(1.0);
 
   // Auto quality mode
-  final isAutoQuality = true.obs;
+  final isAutoQuality = ValueNotifier<bool>(true);
 
   // Seeking state (prevents position updates during slider drag)
-  final isSeeking = false.obs;
+  final isSeeking = ValueNotifier<bool>(false);
 
   // Retry state
-  final isRetrying = false.obs;
-  final retryCount = 0.obs;
+  final isRetrying = ValueNotifier<bool>(false);
+  final retryCount = ValueNotifier<int>(0);
 
   // Texture ID
-  final textureId = Rxn<int>();
+  final textureId = ValueNotifier<int?>(null);
 
   // Double-tap seek state
-  final isDoubleTapSeekingForward = false.obs;
-  final isDoubleTapSeekingBackward = false.obs;
-  final doubleTapSeekSeconds = 0.obs;
-  final doubleTapAnimationKey = 0.obs; // Incremented to trigger new animation
+  final isDoubleTapSeekingForward = ValueNotifier<bool>(false);
+  final isDoubleTapSeekingBackward = ValueNotifier<bool>(false);
+  final doubleTapSeekSeconds = ValueNotifier<int>(0);
+  final doubleTapAnimationKey = ValueNotifier<int>(0);
 
-  @override
-  void onInit() {
-    super.onInit();
+  // Network state
+  final isNetworkConnected = ValueNotifier<bool>(true);
+  final networkType = ValueNotifier<String>('unknown');
+
+  // Picture-in-Picture state
+  final isPiPActive = ValueNotifier<bool>(false);
+
+  // Callbacks for UI interaction
+  Function(String message)? onError;
+  Function(bool isConnected, String type)? onNetworkChanged;
+
+  void initialize() {
     // Defer player initialization to after the navigation animation completes
-    // This prevents the screen from stuttering during the transition
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializePlayer();
     });
   }
 
-  @override
-  void onClose() {
+  void dispose() {
     _nativePlayer.dispose();
-    super.onClose();
+    isInitialized.dispose();
+    initialIndexAssigned.dispose();
+    isLoading.dispose();
+    isPlaying.dispose();
+    isBuffering.dispose();
+    showControls.dispose();
+    subtitleText.dispose();
+    position.dispose();
+    bufferedPosition.dispose();
+    duration.dispose();
+    availableQualities.dispose();
+    availableAudioTracks.dispose();
+    availableSubtitles.dispose();
+    selectedQualityIndex.dispose();
+    selectedAudioIndex.dispose();
+    selectedSubtitleIndex.dispose();
+    volume.dispose();
+    isAutoQuality.dispose();
+    isSeeking.dispose();
+    isRetrying.dispose();
+    retryCount.dispose();
+    textureId.dispose();
+    isDoubleTapSeekingForward.dispose();
+    isDoubleTapSeekingBackward.dispose();
+    doubleTapSeekSeconds.dispose();
+    doubleTapAnimationKey.dispose();
+    isNetworkConnected.dispose();
+    networkType.dispose();
+    isPiPActive.dispose();
   }
 
   /// Initialize the native video player
@@ -104,8 +138,6 @@ class VideoPlayerController extends GetxController {
       }
       bufferedPosition.value = buffered;
       duration.value = dur;
-
-      // Sync track lists
     };
 
     _nativePlayer.onTracksLoaded = () {
@@ -128,18 +160,17 @@ class VideoPlayerController extends GetxController {
 
     _nativePlayer.onError = (message) {
       log("[Player Error] $message");
+      onError?.call(message);
     };
 
     _nativePlayer.onQualityChanged = (index) {
       selectedQualityIndex.value = index;
       _syncTracks();
-      if (index >= 0 && index < availableQualities.length) {}
     };
 
     _nativePlayer.onAudioChanged = (index) {
       selectedAudioIndex.value = index;
       _syncTracks();
-      if (index >= 0 && index < availableAudioTracks.length) {}
     };
 
     _nativePlayer.onSubtitleChanged = (index) {
@@ -153,14 +184,40 @@ class VideoPlayerController extends GetxController {
       log('[Player] Retrying connection: attempt $attempt/$maxRetries');
     };
 
+    _nativePlayer.onNetworkChanged = (isConnected, type) {
+      isNetworkConnected.value = isConnected;
+      networkType.value = type;
+      log('[Player] Network changed: $type (connected: $isConnected)');
+      onNetworkChanged?.call(isConnected, type);
+    };
+
+    _nativePlayer.onPiPChanged = (isActive) {
+      isPiPActive.value = isActive;
+      log('[Player] PiP mode: $isActive');
+
+      if (isActive) {
+        // Hide controls when in PiP
+        showControls.value = false;
+
+        // Resume playback if it was paused by lifecycle handler
+        // (The lifecycle handler fires before PiP event arrives)
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (isPiPActive.value && !isPlaying.value) {
+            log('[Player] Resuming playback in PiP mode');
+            play();
+          }
+        });
+      }
+    };
+
     // Initialize with URL
     await _nativePlayer.initialize(url);
   }
 
   /// Sync track lists from native player
   void _syncTracks() {
-    availableQualities.assignAll(_nativePlayer.availableQualities);
-    availableQualities.sort((a, b) {
+    final qualities = List<VideoQuality>.from(_nativePlayer.availableQualities);
+    qualities.sort((a, b) {
       // First sort by height
       int heightCompare = b.height.compareTo(a.height);
       if (heightCompare != 0) return heightCompare;
@@ -172,26 +229,27 @@ class VideoPlayerController extends GetxController {
       // If still equal, sort by bitrate
       return b.bitrate.compareTo(a.bitrate);
     });
-    availableAudioTracks.assignAll(
-      _nativePlayer.availableAudioTracks
-          .where(
-            (track) => track.language != 'Unknown' && track.label != 'Unknown',
-          )
-          .toList(),
-    );
-    availableSubtitles.assignAll(
-      _nativePlayer.availableSubtitles
-          .where(
-            (track) => track.language != 'Unknown' && track.label != 'Unknown',
-          )
-          .toList(),
-    );
+    availableQualities.value = qualities;
+
+    availableAudioTracks.value = _nativePlayer.availableAudioTracks
+        .where(
+          (track) => track.language != 'Unknown' && track.label != 'Unknown',
+        )
+        .toList();
+
+    availableSubtitles.value = _nativePlayer.availableSubtitles
+        .where(
+          (track) => track.language != 'Unknown' && track.label != 'Unknown',
+        )
+        .toList();
+
     selectedQualityIndex.value = _nativePlayer.selectedQualityIndex;
     selectedAudioIndex.value = _nativePlayer.selectedAudioIndex;
     selectedSubtitleIndex.value = _nativePlayer.selectedSubtitleIndex;
     volume.value = _nativePlayer.volume;
     isAutoQuality.value = _nativePlayer.isAutoQuality;
-    if (availableAudioTracks.isNotEmpty && !initialIndexAssigned.value) {
+
+    if (availableAudioTracks.value.isNotEmpty && !initialIndexAssigned.value) {
       selectedAudioIndex.value = 0;
       initialIndexAssigned.value = true;
     }
@@ -300,29 +358,34 @@ class VideoPlayerController extends GetxController {
   }
 
   /// Set video quality
-  void setQuality(int index) {
+  void setQuality(int index, BuildContext context) {
     _nativePlayer.setQuality(index);
     isAutoQuality.value = false;
-    Get.back();
+    Navigator.of(context).pop();
   }
 
   /// Set auto quality (adaptive bitrate)
-  void setAutoQuality() {
+  void setAutoQuality(BuildContext context) {
     _nativePlayer.setAutoQuality();
     isAutoQuality.value = true;
-    Get.back();
+    Navigator.of(context).pop();
+  }
+
+  /// Enter Picture-in-Picture mode
+  Future<void> enterPiP(BuildContext context) async {
+    await _nativePlayer.enterPiP();
   }
 
   /// Set audio track
-  void setAudioTrack(int index) {
+  void setAudioTrack(int index, BuildContext context) {
     _nativePlayer.setAudioTrack(index);
-    Get.back();
+    Navigator.of(context).pop();
   }
 
   /// Set subtitle track (-1 to disable)
-  void setSubtitle(int index) {
+  void setSubtitle(int index, BuildContext context) {
     _nativePlayer.setSubtitle(index);
-    Get.back();
+    Navigator.of(context).pop();
   }
 
   /// Retry connection after failure
@@ -331,57 +394,64 @@ class VideoPlayerController extends GetxController {
   }
 
   /// Show quality selector bottom sheet
-  void showQualitySelector() {
-    Get.bottomSheet(
-      _buildQualitySelectorSheet(),
+  void showQualitySelector(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
       backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildQualitySelectorSheet(context),
     );
   }
 
   /// Show audio track selector bottom sheet
-  void showAudioTrackSelector() {
-    Get.bottomSheet(
-      _buildTrackSelectorSheet(
+  void showAudioTrackSelector(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildTrackSelectorSheet(
+        context: context,
         title: 'Audio Track',
-        items: availableAudioTracks,
+        items: availableAudioTracks.value,
         selectedIndex: selectedAudioIndex.value,
         labelBuilder: (item) => (item as AudioTrack).label,
-        onSelect: (index) => setAudioTrack(index),
+        onSelect: (index) => setAudioTrack(index, context),
       ),
-      backgroundColor: const Color(0xDD000000),
     );
   }
 
   /// Show subtitle selector bottom sheet
-  void showSubtitleSelector() {
-    Get.bottomSheet(
-      _buildSubtitleSelectorSheet(),
+  void showSubtitleSelector(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
       backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildSubtitleSelectorSheet(context),
     );
   }
 
   /// Show settings bottom sheet
-  void showSettings() {
-    Get.bottomSheet(
-      _buildSettingsSheet(),
+  void showSettings(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
       backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildSettingsSheet(context),
     );
   }
 
   /// Show playback speed selector
-  void showSpeedSelector() {
-    Get.back();
-    Get.bottomSheet(
-      _buildSpeedSelectorSheet(),
+  void showSpeedSelector(BuildContext context) {
+    Navigator.of(context).pop(); // Close settings first
+    showModalBottomSheet(
+      context: context,
       backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildSpeedSelectorSheet(context),
     );
   }
 
   /// Show volume slider
-  void showVolumeSlider() {
-    Get.bottomSheet(
-      _buildVolumeSliderSheet(),
+  void showVolumeSlider(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
       backgroundColor: const Color(0xDD000000),
+      builder: (_) => _buildVolumeSliderSheet(),
     );
   }
 
@@ -401,74 +471,82 @@ class VideoPlayerController extends GetxController {
   // Private UI builder methods
 
   /// Quality selector with Auto option at the top
-  Widget _buildQualitySelectorSheet() {
-    return Obx(
-      () => ListView(
-        shrinkWrap: true,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              'Video Quality',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          // Auto option (adaptive bitrate)
-          ListTile(
-            leading: Icon(
-              isAutoQuality.value ? Icons.check_circle : Icons.circle_outlined,
-              color: isAutoQuality.value ? Colors.red : Colors.white,
-            ),
-            title: Text(
-              'Auto',
-              style: TextStyle(
-                color: isAutoQuality.value ? Colors.red : Colors.white,
-                fontWeight: isAutoQuality.value
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-              ),
-            ),
-            subtitle: const Text(
-              'Adjusts to network conditions',
-              style: TextStyle(color: Colors.white70),
-            ),
-            onTap: setAutoQuality,
-          ),
-          const Divider(color: Colors.white24),
-          // Individual quality options
-          ...List.generate(availableQualities.length, (index) {
-            final quality = availableQualities[index];
-            final isSelected =
-                !isAutoQuality.value && index == selectedQualityIndex.value;
-            return ListTile(
-              leading: Icon(
-                isSelected ? Icons.check_circle : Icons.circle_outlined,
-                color: isSelected ? Colors.red : Colors.white,
-              ),
-              title: Text(
-                quality.label,
-                style: TextStyle(
-                  color: isSelected ? Colors.red : Colors.white,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+  Widget _buildQualitySelectorSheet(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: isAutoQuality,
+      builder: (context, isAuto, _) {
+        return ValueListenableBuilder(
+          valueListenable: selectedQualityIndex,
+          builder: (context, selectedIndex, _) {
+            return ListView(
+              shrinkWrap: true,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    'Video Quality',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
-              ),
-              subtitle: Text(
-                '${quality.width}x${quality.height}',
-                style: const TextStyle(color: Colors.white70),
-              ),
-              onTap: () => setQuality(index),
+                // Auto option (adaptive bitrate)
+                ListTile(
+                  leading: Icon(
+                    isAuto ? Icons.check_circle : Icons.circle_outlined,
+                    color: isAuto ? Colors.red : Colors.white,
+                  ),
+                  title: Text(
+                    'Auto',
+                    style: TextStyle(
+                      color: isAuto ? Colors.red : Colors.white,
+                      fontWeight: isAuto ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'Adjusts to network conditions',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  onTap: () => setAutoQuality(context),
+                ),
+                const Divider(color: Colors.white24),
+                // Individual quality options
+                ...List.generate(availableQualities.value.length, (index) {
+                  final quality = availableQualities.value[index];
+                  final isSelected = !isAuto && index == selectedIndex;
+                  return ListTile(
+                    leading: Icon(
+                      isSelected ? Icons.check_circle : Icons.circle_outlined,
+                      color: isSelected ? Colors.red : Colors.white,
+                    ),
+                    title: Text(
+                      quality.label,
+                      style: TextStyle(
+                        color: isSelected ? Colors.red : Colors.white,
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    subtitle: Text(
+                      '${quality.width}x${quality.height}',
+                      style: const TextStyle(color: Colors.white70),
+                    ),
+                    onTap: () => setQuality(index, context),
+                  );
+                }),
+              ],
             );
-          }),
-        ],
-      ),
+          },
+        );
+      },
     );
   }
 
   Widget _buildTrackSelectorSheet({
+    required BuildContext context,
     required String title,
     required List items,
     required int selectedIndex,
@@ -527,69 +605,70 @@ class VideoPlayerController extends GetxController {
     );
   }
 
-  Widget _buildSubtitleSelectorSheet() {
-    return Obx(
-      () => ListView(
-        shrinkWrap: true,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              'Subtitles',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          // Off option
-          ListTile(
-            leading: Icon(
-              selectedSubtitleIndex.value == -1
-                  ? Icons.check_circle
-                  : Icons.circle_outlined,
-              color: selectedSubtitleIndex.value == -1
-                  ? Colors.red
-                  : Colors.white,
-            ),
-            title: Text(
-              'Off',
-              style: TextStyle(
-                color: selectedSubtitleIndex.value == -1
-                    ? Colors.red
-                    : Colors.white,
-                fontWeight: selectedSubtitleIndex.value == -1
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-              ),
-            ),
-            onTap: () => setSubtitle(-1),
-          ),
-          ...List.generate(availableSubtitles.length, (index) {
-            final subtitle = availableSubtitles[index];
-            final isSelected = index == selectedSubtitleIndex.value;
-            return ListTile(
-              leading: Icon(
-                isSelected ? Icons.check_circle : Icons.circle_outlined,
-                color: isSelected ? Colors.red : Colors.white,
-              ),
-              title: Text(
-                subtitle.label,
+  Widget _buildSubtitleSelectorSheet(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: selectedSubtitleIndex,
+      builder: (context, selectedIndex, _) {
+        return ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Text(
+                'Subtitles',
                 style: TextStyle(
-                  color: isSelected ? Colors.red : Colors.white,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-              onTap: () => setSubtitle(index),
-            );
-          }),
-        ],
-      ),
+            ),
+            // Off option
+            ListTile(
+              leading: Icon(
+                selectedIndex == -1
+                    ? Icons.check_circle
+                    : Icons.circle_outlined,
+                color: selectedIndex == -1 ? Colors.red : Colors.white,
+              ),
+              title: Text(
+                'Off',
+                style: TextStyle(
+                  color: selectedIndex == -1 ? Colors.red : Colors.white,
+                  fontWeight: selectedIndex == -1
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+              onTap: () => setSubtitle(-1, context),
+            ),
+            ...List.generate(availableSubtitles.value.length, (index) {
+              final subtitle = availableSubtitles.value[index];
+              final isSelected = index == selectedIndex;
+              return ListTile(
+                leading: Icon(
+                  isSelected ? Icons.check_circle : Icons.circle_outlined,
+                  color: isSelected ? Colors.red : Colors.white,
+                ),
+                title: Text(
+                  subtitle.label,
+                  style: TextStyle(
+                    color: isSelected ? Colors.red : Colors.white,
+                    fontWeight: isSelected
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
+                ),
+                onTap: () => setSubtitle(index, context),
+              );
+            }),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildSettingsSheet() {
+  Widget _buildSettingsSheet(BuildContext context) {
     return ListView(
       shrinkWrap: true,
       children: [
@@ -610,13 +689,13 @@ class VideoPlayerController extends GetxController {
             'Playback Speed',
             style: TextStyle(color: Colors.white),
           ),
-          onTap: showSpeedSelector,
+          onTap: () => showSpeedSelector(context),
         ),
       ],
     );
   }
 
-  Widget _buildSpeedSelectorSheet() {
+  Widget _buildSpeedSelectorSheet(BuildContext context) {
     final speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
     return ListView(
       shrinkWrap: true,
@@ -640,7 +719,7 @@ class VideoPlayerController extends GetxController {
             ),
             onTap: () {
               setSpeed(speed);
-              Get.back();
+              Navigator.of(context).pop();
             },
           );
         }),
@@ -649,65 +728,68 @@ class VideoPlayerController extends GetxController {
   }
 
   Widget _buildVolumeSliderSheet() {
-    return Obx(
-      () => Container(
-        padding: const EdgeInsets.all(24.0),
-        height: 250,
-        child: Column(
-          children: [
-            const Text(
-              'Volume',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+    return ValueListenableBuilder(
+      valueListenable: volume,
+      builder: (context, vol, _) {
+        return Container(
+          padding: const EdgeInsets.all(24.0),
+          height: 250,
+          child: Column(
+            children: [
+              const Text(
+                'Volume',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    volume.value == 0
-                        ? Icons.volume_off
-                        : volume.value < 0.5
-                        ? Icons.volume_down
-                        : Icons.volume_up,
-                    color: Colors.white,
-                    size: 32,
-                  ),
-                  const SizedBox(width: 20),
-                  Expanded(
-                    child: SliderTheme(
-                      data: SliderThemeData(
-                        activeTrackColor: Colors.red,
-                        inactiveTrackColor: Colors.white30,
-                        thumbColor: Colors.red,
-                        overlayColor: Colors.red.withValues(alpha: 0.2),
-                        trackHeight: 4,
-                      ),
-                      child: Slider(
-                        value: volume.value,
-                        min: 0.0,
-                        max: 1.0,
-                        divisions: 20,
-                        label: '${(volume.value * 100).round()}%',
-                        onChanged: setVolume,
+              const SizedBox(height: 20),
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      vol == 0
+                          ? Icons.volume_off
+                          : vol < 0.5
+                          ? Icons.volume_down
+                          : Icons.volume_up,
+                      color: Colors.white,
+                      size: 32,
+                    ),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderThemeData(
+                          activeTrackColor: Colors.red,
+                          inactiveTrackColor: Colors.white30,
+                          thumbColor: Colors.red,
+                          overlayColor: Colors.red.withOpacity(0.2),
+                          trackHeight: 4,
+                        ),
+                        child: Slider(
+                          value: vol,
+                          min: 0.0,
+                          max: 1.0,
+                          divisions: 20,
+                          label: '${(vol * 100).round()}%',
+                          onChanged: setVolume,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '${(volume.value * 100).round()}%',
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                ],
+                    const SizedBox(width: 10),
+                    Text(
+                      '${(vol * 100).round()}%',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
-        ),
-      ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
