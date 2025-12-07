@@ -23,6 +23,15 @@ class NativeVideoPlayer {
   bool _isInitialized = false;
   double _volume = 1.0; // Default volume
 
+  // Retry logic
+  String? _currentUrl;
+  int _retryCount = 0;
+  static const int _maxRetries = 3;
+  bool _isRetrying = false;
+
+  // Track caching
+  bool _tracksLoaded = false;
+
   // Tracks
   List<VideoQuality> _availableQualities = [];
   List<AudioTrack> _availableAudioTracks = [];
@@ -30,12 +39,14 @@ class NativeVideoPlayer {
   int _selectedQualityIndex = -1;
   int _selectedAudioIndex = -1;
   int _selectedSubtitleIndex = -1;
+  bool _isAutoQuality = true; // Start with auto quality enabled
 
   // Event subscription
   StreamSubscription? _eventSubscription;
 
   // Callbacks
   Function()? onInitialized;
+  Function()? onTracksLoaded;
   Function(Duration position, Duration bufferedPosition, Duration duration)?
   onPositionUpdate;
   Function(bool isPlaying)? onPlaybackStateChanged;
@@ -46,6 +57,7 @@ class NativeVideoPlayer {
   Function(int index)? onAudioChanged;
   Function(int index)? onSubtitleChanged;
   Function(String text)? onSubtitleText;
+  Function(int attempt, int maxRetries)? onRetrying; // Retry callback
 
   // Getters
   int? get textureId => _textureId;
@@ -62,10 +74,17 @@ class NativeVideoPlayer {
   int get selectedQualityIndex => _selectedQualityIndex;
   int get selectedAudioIndex => _selectedAudioIndex;
   int get selectedSubtitleIndex => _selectedSubtitleIndex;
+  bool get isAutoQuality => _isAutoQuality;
+  bool get isRetrying => _isRetrying;
+  int get retryCount => _retryCount;
 
   /// Initialize the player with a video URL
   /// Supports HLS (.m3u8), DASH (.mpd), and MP4 formats
   Future<void> initialize(String url) async {
+    _currentUrl = url;
+    _retryCount = 0;
+    _tracksLoaded = false;
+
     try {
       final result = await _methodChannel.invokeMethod('initialize', {
         'url': url,
@@ -73,6 +92,7 @@ class NativeVideoPlayer {
 
       _textureId = result['textureId'] as int;
       _isInitialized = true;
+      _isRetrying = false;
 
       // Start listening to events
       _startEventListener();
@@ -86,7 +106,62 @@ class NativeVideoPlayer {
       onInitialized?.call();
     } catch (e) {
       onError?.call('Failed to initialize: $e');
-      rethrow;
+      // Attempt retry on initialization failure
+      await _attemptRetry();
+    }
+  }
+
+  /// Attempt to retry initialization with exponential backoff
+  Future<void> _attemptRetry() async {
+    if (_currentUrl == null || _retryCount >= _maxRetries) {
+      log('[NativePlayer] Max retries reached or no URL available');
+      _isRetrying = false;
+      return;
+    }
+
+    _retryCount++;
+    _isRetrying = true;
+
+    // Exponential backoff: 1s, 2s, 4s
+    final delay = Duration(seconds: 1 << (_retryCount - 1));
+    log(
+      '[NativePlayer] Retry attempt $_retryCount/$_maxRetries in ${delay.inSeconds}s',
+    );
+
+    onRetrying?.call(_retryCount, _maxRetries);
+
+    await Future.delayed(delay);
+
+    // Only retry if still in retrying state (not disposed)
+    if (_isRetrying && _currentUrl != null) {
+      try {
+        final result = await _methodChannel.invokeMethod('initialize', {
+          'url': _currentUrl,
+        });
+
+        _textureId = result['textureId'] as int;
+        _isInitialized = true;
+        _isRetrying = false;
+        _retryCount = 0;
+
+        _startEventListener();
+        await setVolume(_volume);
+
+        log('[NativePlayer] Retry successful!');
+        onInitialized?.call();
+      } catch (e) {
+        log('[NativePlayer] Retry $_retryCount failed: $e');
+        // Recurse for next retry attempt
+        await _attemptRetry();
+      }
+    }
+  }
+
+  /// Manually trigger a retry (for user-initiated retry button)
+  Future<void> retryConnection() async {
+    _retryCount = 0;
+    if (_currentUrl != null) {
+      await initialize(_currentUrl!);
     }
   }
 
@@ -193,14 +268,25 @@ class NativeVideoPlayer {
     }
   }
 
-  /// Set video quality - SEAMLESS SWITCHING
-  /// No pause, no reload, Netflix-smooth
   Future<void> setQuality(int index) async {
     try {
       await _methodChannel.invokeMethod('setQuality', {'index': index});
       _selectedQualityIndex = index;
+      _isAutoQuality = false;
     } catch (e) {
       onError?.call('Failed to set quality: $e');
+    }
+  }
+
+  /// Set auto quality - ADAPTIVE BITRATE (Netflix/YouTube-style)
+  /// Clears constraints and lets ExoPlayer's ABR algorithm choose
+  Future<void> setAutoQuality() async {
+    try {
+      await _methodChannel.invokeMethod('setAutoQuality');
+      _selectedQualityIndex = -1;
+      _isAutoQuality = true;
+    } catch (e) {
+      onError?.call('Failed to set auto quality: $e');
     }
   }
 
@@ -285,38 +371,60 @@ class NativeVideoPlayer {
 
   /// Dispose the player and release resources
   Future<void> dispose() async {
+    log('[NativePlayer] Disposing player...');
+
+    // Stop any ongoing retry attempts
+    _isRetrying = false;
+    _currentUrl = null;
+
     await _eventSubscription?.cancel();
     _eventSubscription = null;
 
     try {
       await _methodChannel.invokeMethod('dispose');
+      log('[NativePlayer] Player disposed successfully');
     } catch (e) {
-      // Ignore errors during disposal
+      log('[NativePlayer] Error during disposal: $e');
     }
 
     _isInitialized = false;
     _textureId = null;
+    _tracksLoaded = false;
   }
 
   /// Load all available tracks
-  /// Retries with delay to ensure media is prepared
-  Future<void> loadTracks() async {
+  /// Uses caching to prevent redundant calls
+  /// Set forceRefresh to true to bypass cache
+  Future<void> loadTracks({bool forceRefresh = false}) async {
+    // Skip if already loaded (unless force refresh)
+    if (_tracksLoaded && !forceRefresh) {
+      log('[NativePlayer] Tracks already loaded, skipping');
+      return;
+    }
+
+    log('[NativePlayer] Loading tracks...');
+
     // Initial load (will be empty if tracks not ready yet)
     await getAvailableQualities();
     await getAvailableAudioTracks();
     await getAvailableSubtitles();
 
-    // ALWAYS retry after 500ms (tracks become available after onTracksChanged)
-    await Future.delayed(const Duration(milliseconds: 500));
-    await getAvailableQualities();
-    await getAvailableAudioTracks();
-    await getAvailableSubtitles();
+    // Retry after 500ms (tracks become available after onTracksChanged)
+    if (_availableQualities.isEmpty) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await getAvailableQualities();
+      await getAvailableAudioTracks();
+      await getAvailableSubtitles();
+    }
 
-    // ALWAYS retry again after another 500ms for slow connections
-    await Future.delayed(const Duration(milliseconds: 500));
-    await getAvailableQualities();
-    await getAvailableAudioTracks();
-    await getAvailableSubtitles();
+    // Mark as loaded if we have any tracks
+    if (_availableQualities.isNotEmpty || _availableAudioTracks.isNotEmpty) {
+      _tracksLoaded = true;
+      log(
+        '[NativePlayer] Tracks loaded: ${_availableQualities.length} qualities, ${_availableAudioTracks.length} audio, ${_availableSubtitles.length} subtitles',
+      );
+    }
+    onTracksLoaded?.call();
   }
 
   /// Start listening to player events
@@ -335,6 +443,11 @@ class NativeVideoPlayer {
   void _handleEvent(Map<dynamic, dynamic> event) {
     final eventType = event['event'] as String?;
 
+    // Only log non-position events (position events are too frequent)
+    if (eventType != 'position') {
+      log("[NativePlayer] Event: $eventType, data: $event");
+    }
+
     if (eventType == 'position') {
       // Position update
       _position = Duration(milliseconds: event['position'] as int);
@@ -346,6 +459,7 @@ class NativeVideoPlayer {
     } else if (event.containsKey('playbackState')) {
       // Playback state change
       final state = event['playbackState'] as String;
+      log("[NativePlayer] Playback state changed to: $state");
       if (state == 'playing') {
         _isPlaying = true;
         // Load tracks when playback starts (tracks are ready by now)
@@ -369,6 +483,7 @@ class NativeVideoPlayer {
     } else if (eventType == 'qualityChanged') {
       // Quality changed
       _selectedQualityIndex = event['index'] as int;
+      _isAutoQuality = (event['isAuto'] as bool?) ?? false;
       // Reload tracks to ensure we have latest info
       loadTracks();
       onQualityChanged?.call(_selectedQualityIndex);

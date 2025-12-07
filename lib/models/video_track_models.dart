@@ -1,5 +1,3 @@
-/// Video track data models for the native video player
-
 /// Represents a video quality option
 class VideoQuality {
   final int index;

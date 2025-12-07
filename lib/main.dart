@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:get/get_navigation/get_navigation.dart';
 import 'widgets/custom_video_player.dart';
 
 void main() {
@@ -6,11 +7,11 @@ void main() {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return GetMaterialApp(
       title: 'Custom Video Player Demo',
       theme: ThemeData(primarySwatch: Colors.red, brightness: Brightness.dark),
       home: const VideoListScreen(),
@@ -32,12 +33,13 @@ class VideoListScreen extends StatelessWidget {
     ),
     VideoItem(
       title: 'Sintel (HLS)',
-      url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      url: 'https://content.jwplatform.com/manifests/vM7nH0Kl.m3u8',
       description: 'HLS adaptive streaming with multiple qualities',
     ),
     VideoItem(
       title: 'Tears of Steel (DASH)',
-      url: 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd',
+      url:
+          'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.mp4/.m3u8',
       description: 'DASH adaptive streaming',
     ),
     VideoItem(
@@ -47,9 +49,10 @@ class VideoListScreen extends StatelessWidget {
       description: 'HLS adaptive with multiple qualities - JW Player test',
     ),
     VideoItem(
-      title: 'Elephant Dream (HLS)',
-      url: 'https://test-streams.mux.dev/elephants_dream/elephants_dream.m3u8',
-      description: 'HLS with multiple audio tracks and subtitles',
+      title: 'Big Buck(HLS)',
+      url:
+          'https://sample.vodobox.net/skate_phantom_flex_4k/skate_phantom_flex_4k.m3u8',
+      description: 'Big Buck Bunny HLS',
     ),
   ];
 

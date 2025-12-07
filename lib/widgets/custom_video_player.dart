@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import '../services/native_video_player.dart';
+import 'package:get/get.dart';
+import '../controllers/video_player_controller.dart';
 
-/// Custom video player widget with Netflix-smooth controls
+/// Custom video player widget with Netflix-smooth controls using GetX
+/// Handles app lifecycle (pause on background) and graceful disposal
 class CustomVideoPlayer extends StatefulWidget {
   final String url;
   final bool autoPlay;
@@ -12,268 +14,343 @@ class CustomVideoPlayer extends StatefulWidget {
   State<CustomVideoPlayer> createState() => _CustomVideoPlayerState();
 }
 
-class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
-  late NativeVideoPlayer _controller;
-  bool _isInitialized = false;
-  bool _showControls = true;
-  bool _isLoading = true;
-  String _subtitleText = '';
+class _CustomVideoPlayerState extends State<CustomVideoPlayer>
+    with WidgetsBindingObserver {
+  late VideoPlayerController controller;
+  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
     super.initState();
-    _initializePlayer();
-  }
+    WidgetsBinding.instance.addObserver(this);
 
-  Future<void> _initializePlayer() async {
-    _controller = NativeVideoPlayer();
-
-    // Set up callbacks
-    _controller.onInitialized = () {
-      setState(() {
-        _isInitialized = true;
-        _isLoading = false;
-      });
-      if (widget.autoPlay) {
-        _controller.play();
-      }
-    };
-
-    _controller.onPositionUpdate = (position, buffered, duration) {
-      setState(() {});
-    };
-
-    _controller.onPlaybackStateChanged = (isPlaying) {
-      setState(() {});
-    };
-
-    _controller.onBufferingStateChanged = (isBuffering) {
-      setState(() {
-        _isLoading = isBuffering;
-      });
-    };
-
-    _controller.onSubtitleChanged = (index) {
-      if (mounted) setState(() {});
-    };
-
-    _controller.onSubtitleText = (text) {
-      if (mounted) {
-        setState(() {
-          _subtitleText = text;
-        });
-      }
-    };
-
-    _controller.onError = (message) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error: $message')));
-    };
-
-    _controller.onQualityChanged = (index) {
-      final quality = _controller.availableQualities[index];
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Quality changed to ${quality.label}'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
-    };
-
-    _controller.onAudioChanged = (index) {
-      final audio = _controller.availableAudioTracks[index];
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Audio changed to ${audio.label}'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
-    };
-
-    _controller.onSubtitleChanged = (index) {
-      final subtitle = index >= 0
-          ? _controller.availableSubtitles[index].label
-          : 'Off';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Subtitle: $subtitle'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
-    };
-
-    // Initialize with URL
-    await _controller.initialize(widget.url);
+    // Initialize the controller with a unique tag based on the URL
+    controller = Get.put(
+      VideoPlayerController(url: widget.url, autoPlay: widget.autoPlay),
+      tag: widget.url,
+    );
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    // Gracefully dispose the controller when navigating away
+    Get.delete<VideoPlayerController>(tag: widget.url);
     super.dispose();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        // App going to background - pause video
+        _wasPlayingBeforeBackground = controller.isPlaying.value;
+        if (_wasPlayingBeforeBackground) {
+          controller.pause();
+        }
+        break;
+      case AppLifecycleState.resumed:
+        // App coming back to foreground - resume if was playing
+        if (_wasPlayingBeforeBackground) {
+          controller.play();
+          _wasPlayingBeforeBackground = false;
+        }
+        break;
+      case AppLifecycleState.detached:
+      case AppLifecycleState.hidden:
+        // App being destroyed - handled by dispose
+        break;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // Video texture
-            if (_isInitialized && _controller.textureId != null)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: SizedBox.expand(
-                    child: Texture(textureId: _controller.textureId!),
-                  ),
-                ),
-              ),
-
-            // Subtitle Overlay
-            if (_subtitleText.isNotEmpty)
-              Align(
-                alignment: const Alignment(0.0, 0.86), // ~87.5% down the screen
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 20),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 5,
-                  ),
-                  color: Colors.black54,
-                  child: Text(
-                    _subtitleText,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) {
+          controller.pause();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              // Video texture
+              Obx(() {
+                if (controller.isInitialized.value &&
+                    controller.textureId.value != null) {
+                  return Center(
+                    child: AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: SizedBox.expand(
+                        child: Texture(textureId: controller.textureId.value!),
+                      ),
                     ),
-                  ),
-                ),
-              ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
 
-            // Loading indicator
-            if (_isLoading)
-              const Center(child: CircularProgressIndicator(color: Colors.red)),
+              // Subtitle Overlay
+              Obx(() {
+                if (controller.subtitleText.value.isNotEmpty) {
+                  return Align(
+                    alignment: const Alignment(0.0, 0.86),
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 20),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      color: Colors.black54,
+                      child: Text(
+                        controller.subtitleText.value,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
 
-            // Controls overlay
-            if (_isInitialized)
-              GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _showControls = !_showControls;
-                  });
-                },
-                child: AnimatedOpacity(
-                  opacity: _showControls ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: Container(
-                    color: Colors.black54,
-                    child: Column(
-                      children: [
-                        _buildTopBar(),
-                        const Spacer(),
-                        _buildCenterControls(),
-                        const Spacer(),
-                        _buildBottomControls(),
+              // Loading indicator
+              Obx(() {
+                if (controller.isLoading.value ||
+                    controller.isBuffering.value ||
+                    !controller.isInitialized.value) {
+                  return Container(
+                    color: Colors.black87,
+                    child: const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: Colors.red),
+                          SizedBox(height: 16),
+                          Text(
+                            'Loading...',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+
+              // Controls overlay (BELOW double-tap zones so it doesn't block gestures)
+              Obx(() {
+                if (controller.isInitialized.value) {
+                  return IgnorePointer(
+                    ignoring:
+                        true, // Always ignore pointer - gestures handled by double-tap zones
+                    child: AnimatedOpacity(
+                      opacity: controller.showControls.value ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 300),
+                      child: Container(
+                        color: Colors.black54,
+                        child: Column(
+                          children: [
+                            _buildTopBar(controller),
+                            const Spacer(),
+                            _buildBottomControls(controller),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+
+              // Double-tap seek zones (on top for gesture detection)
+              Obx(() {
+                if (controller.isInitialized.value) {
+                  return Stack(
+                    children: [
+                      Row(
+                        children: [
+                          // Left zone - backward seek
+                          Expanded(
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.translucent,
+                              onDoubleTap: () =>
+                                  controller.doubleTapSeekBackward(seconds: 10),
+                              onTap: controller.toggleControls,
+                              child: const SizedBox.expand(),
+                            ),
+                          ),
+                          // Right zone - forward seek
+                          Expanded(
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.translucent,
+                              onDoubleTap: () =>
+                                  controller.doubleTapSeekForward(seconds: 10),
+                              onTap: controller.toggleControls,
+                              child: const SizedBox.expand(),
+                            ),
+                          ),
+                        ],
+                      ),
+                      // Control buttons that need to be tappable
+                      if (controller.showControls.value) ...[
+                        // Top bar buttons
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: _buildTopBar(controller),
+                        ),
+                        // Center controls
+                        Positioned.fill(
+                          child: Center(
+                            child: _buildCenterControls(controller),
+                          ),
+                        ),
+                        // Bottom controls
+                        Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: _buildBottomControls(controller),
+                        ),
                       ],
+                    ],
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+
+              // Backward seek animation overlay (left side)
+              Obx(() {
+                if (controller.isDoubleTapSeekingBackward.value) {
+                  return Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: MediaQuery.of(context).size.width * 0.4,
+                    child: IgnorePointer(
+                      child: _DoubleTapSeekAnimation(
+                        key: ValueKey(
+                          'backward_${controller.doubleTapAnimationKey.value}',
+                        ),
+                        isForward: false,
+                        seconds: controller.doubleTapSeekSeconds.value,
+                      ),
                     ),
-                  ),
-                ),
-              ),
-          ],
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+
+              // Forward seek animation overlay (right side)
+              Obx(() {
+                if (controller.isDoubleTapSeekingForward.value) {
+                  return Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: MediaQuery.of(context).size.width * 0.4,
+                    child: IgnorePointer(
+                      child: _DoubleTapSeekAnimation(
+                        key: ValueKey(
+                          'forward_${controller.doubleTapAnimationKey.value}',
+                        ),
+                        isForward: true,
+                        seconds: controller.doubleTapSeekSeconds.value,
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildTopBar() {
+  Widget _buildTopBar(VideoPlayerController controller) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: Row(
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back, color: Colors.white),
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Get.back(),
           ),
           const Spacer(),
           // Quality selector
           IconButton(
             icon: const Icon(Icons.hd, color: Colors.white),
-            onPressed: _showQualitySelector,
+            onPressed: controller.showQualitySelector,
           ),
           // Audio track selector
           IconButton(
             icon: const Icon(Icons.audiotrack, color: Colors.white),
-            onPressed: _showAudioTrackSelector,
+            onPressed: controller.showAudioTrackSelector,
           ),
           // Subtitle selector
           IconButton(
             icon: const Icon(Icons.subtitles, color: Colors.white),
-            onPressed: _showSubtitleSelector,
+            onPressed: controller.showSubtitleSelector,
           ),
           // Settings
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
-            onPressed: _showSettings,
+            onPressed: controller.showSettings,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildCenterControls() {
+  Widget _buildCenterControls(VideoPlayerController controller) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         // Rewind 10s
         IconButton(
           icon: const Icon(Icons.replay_10, color: Colors.white, size: 40),
-          onPressed: () {
-            final newPosition =
-                _controller.position - const Duration(seconds: 10);
-            _controller.seekTo(
-              newPosition.isNegative ? Duration.zero : newPosition,
-            );
-          },
+          onPressed: controller.rewind,
         ),
         const SizedBox(width: 40),
         // Play/Pause
-        IconButton(
-          icon: Icon(
-            _controller.isPlaying ? Icons.pause : Icons.play_arrow,
-            color: Colors.white,
-            size: 60,
+        Obx(
+          () => IconButton(
+            icon: Icon(
+              controller.isPlaying.value ? Icons.pause : Icons.play_arrow,
+              color: Colors.white,
+              size: 60,
+            ),
+            onPressed: controller.togglePlayPause,
           ),
-          onPressed: () {
-            if (_controller.isPlaying) {
-              _controller.pause();
-            } else {
-              _controller.play();
-            }
-          },
         ),
         const SizedBox(width: 40),
         // Forward 10s
         IconButton(
           icon: const Icon(Icons.forward_10, color: Colors.white, size: 40),
-          onPressed: () {
-            final newPosition =
-                _controller.position + const Duration(seconds: 10);
-            _controller.seekTo(
-              newPosition > _controller.duration
-                  ? _controller.duration
-                  : newPosition,
-            );
-          },
+          onPressed: controller.forward,
         ),
       ],
     );
   }
 
-  Widget _buildBottomControls() {
+  Widget _buildBottomControls(VideoPlayerController controller) {
     return Column(
       children: [
         // Progress bar
@@ -281,30 +358,58 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           child: Row(
             children: [
-              Text(
-                _formatDuration(_controller.position),
-                style: const TextStyle(color: Colors.white, fontSize: 12),
-              ),
-              Expanded(
-                child: Slider(
-                  value: _controller.duration.inMilliseconds > 0
-                      ? _controller.position.inMilliseconds /
-                            _controller.duration.inMilliseconds
-                      : 0.0,
-                  onChanged: (value) {
-                    final position = Duration(
-                      milliseconds:
-                          (value * _controller.duration.inMilliseconds).toInt(),
-                    );
-                    _controller.seekTo(position);
-                  },
-                  activeColor: Colors.red,
-                  inactiveColor: Colors.white30,
+              Obx(
+                () => Text(
+                  controller.formatDuration(controller.position.value),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
                 ),
               ),
-              Text(
-                _formatDuration(_controller.duration),
-                style: const TextStyle(color: Colors.white, fontSize: 12),
+              Expanded(
+                child: Obx(
+                  () => Slider(
+                    value: controller.duration.value.inMilliseconds > 0
+                        ? (controller.position.value.inMilliseconds /
+                                  controller.duration.value.inMilliseconds)
+                              .clamp(0.0, 1.0)
+                        : 0.0,
+
+                    /// When user starts dragging
+                    onChangeStart: (value) {
+                      controller.isSeeking.value = true;
+                    },
+
+                    /// When slider value is changing - update UI only, no native seek
+                    onChanged: (value) {
+                      // Update position locally for immediate UI feedback
+                      controller.position.value = Duration(
+                        milliseconds:
+                            (value * controller.duration.value.inMilliseconds)
+                                .toInt(),
+                      );
+                    },
+
+                    /// When user stops dragging - perform actual seek
+                    onChangeEnd: (value) {
+                      final position = Duration(
+                        milliseconds:
+                            (value * controller.duration.value.inMilliseconds)
+                                .toInt(),
+                      );
+                      controller.seekTo(position);
+                      controller.isSeeking.value = false;
+                    },
+
+                    activeColor: Colors.red,
+                    inactiveColor: Colors.white30,
+                  ),
+                ),
+              ),
+
+              Obx(
+                () => Text(
+                  controller.formatDuration(controller.duration.value),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
               ),
             ],
           ),
@@ -317,378 +422,252 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
               // Volume
               IconButton(
                 icon: const Icon(Icons.volume_up, color: Colors.white),
-                onPressed: _showVolumeSlider,
+                onPressed: controller.showVolumeSlider,
               ),
               const Spacer(),
               // Current quality indicator
-              if (_controller.selectedQualityIndex >= 0 &&
-                  _controller.selectedQualityIndex <
-                      _controller.availableQualities.length)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    _controller
-                        .availableQualities[_controller.selectedQualityIndex]
-                        .label,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+              Obx(() {
+                // Show "Auto" when auto quality is enabled
+                if (controller.isAutoQuality.value) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
                     ),
-                  ),
-                ),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'Auto',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                }
+                // Show selected quality label
+                if (controller.selectedQualityIndex.value >= 0 &&
+                    controller.selectedQualityIndex.value <
+                        controller.availableQualities.length) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      controller
+                          .availableQualities[controller
+                              .selectedQualityIndex
+                              .value]
+                          .label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
             ],
           ),
         ),
       ],
     );
   }
+}
 
-  void _showQualitySelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                'Video Quality',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ...List.generate(_controller.availableQualities.length, (index) {
-              final quality = _controller.availableQualities[index];
-              final isSelected = index == _controller.selectedQualityIndex;
-              return ListTile(
-                leading: Icon(
-                  isSelected ? Icons.check_circle : Icons.circle_outlined,
-                  color: isSelected ? Colors.red : Colors.white,
-                ),
-                title: Text(
-                  quality.label,
-                  style: TextStyle(
-                    color: isSelected ? Colors.red : Colors.white,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
-                subtitle: Text(
-                  '${quality.width}x${quality.height}',
-                  style: const TextStyle(color: Colors.white70),
-                ),
-                onTap: () {
-                  _controller.setQuality(index);
-                  Navigator.pop(context);
-                },
-              );
-            }),
-          ],
-        );
-      },
+/// Animated widget for double-tap seek feedback (YouTube-style)
+class _DoubleTapSeekAnimation extends StatefulWidget {
+  final bool isForward;
+  final int seconds;
+
+  const _DoubleTapSeekAnimation({
+    super.key,
+    required this.isForward,
+    required this.seconds,
+  });
+
+  @override
+  State<_DoubleTapSeekAnimation> createState() =>
+      _DoubleTapSeekAnimationState();
+}
+
+class _DoubleTapSeekAnimationState extends State<_DoubleTapSeekAnimation>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _rippleAnimation;
+  late Animation<double> _fadeAnimation;
+  late Animation<double> _iconAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 700),
+      vsync: this,
     );
+
+    _rippleAnimation = Tween<double>(
+      begin: 0.3,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+
+    _fadeAnimation = Tween<double>(begin: 0.8, end: 0.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: const Interval(0.4, 1.0, curve: Curves.easeOut),
+      ),
+    );
+
+    _iconAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: const Interval(0.0, 0.4, curve: Curves.elasticOut),
+      ),
+    );
+
+    _controller.forward();
   }
 
-  void _showAudioTrackSelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                'Audio Track',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ...List.generate(_controller.availableAudioTracks.length, (index) {
-              final audio = _controller.availableAudioTracks[index];
-              final isSelected = index == _controller.selectedAudioIndex;
-              return ListTile(
-                leading: Icon(
-                  isSelected ? Icons.check_circle : Icons.circle_outlined,
-                  color: isSelected ? Colors.red : Colors.white,
-                ),
-                title: Text(
-                  audio.label,
-                  style: TextStyle(
-                    color: isSelected ? Colors.red : Colors.white,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
-                onTap: () {
-                  _controller.setAudioTrack(index);
-                  Navigator.pop(context);
-                },
-              );
-            }),
-          ],
-        );
-      },
-    );
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
-  void _showSubtitleSelector() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return ListView(
-          shrinkWrap: true,
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Stack(
+          alignment: widget.isForward
+              ? Alignment.centerLeft
+              : Alignment.centerRight,
           children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                'Subtitles',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            // Off option
-            ListTile(
-              leading: Icon(
-                _controller.selectedSubtitleIndex == -1
-                    ? Icons.check_circle
-                    : Icons.circle_outlined,
-                color: _controller.selectedSubtitleIndex == -1
-                    ? Colors.red
-                    : Colors.white,
-              ),
-              title: Text(
-                'Off',
-                style: TextStyle(
-                  color: _controller.selectedSubtitleIndex == -1
-                      ? Colors.red
-                      : Colors.white,
-                  fontWeight: _controller.selectedSubtitleIndex == -1
-                      ? FontWeight.bold
-                      : FontWeight.normal,
-                ),
-              ),
-              onTap: () {
-                _controller.setSubtitle(-1);
-                Navigator.pop(context);
-              },
-            ),
-            ...List.generate(_controller.availableSubtitles.length, (index) {
-              final subtitle = _controller.availableSubtitles[index];
-              final isSelected = index == _controller.selectedSubtitleIndex;
-              return ListTile(
-                leading: Icon(
-                  isSelected ? Icons.check_circle : Icons.circle_outlined,
-                  color: isSelected ? Colors.red : Colors.white,
-                ),
-                title: Text(
-                  subtitle.label,
-                  style: TextStyle(
-                    color: isSelected ? Colors.red : Colors.white,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
-                ),
-                onTap: () {
-                  _controller.setSubtitle(index);
-                  Navigator.pop(context);
-                },
-              );
-            }),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showSettings() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                'Settings',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            // Playback speed
-            ListTile(
-              leading: const Icon(Icons.speed, color: Colors.white),
-              title: const Text(
-                'Playback Speed',
-                style: TextStyle(color: Colors.white),
-              ),
-              onTap: () {
-                Navigator.pop(context);
-                _showSpeedSelector();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showSpeedSelector() {
-    final speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                'Playback Speed',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ...speeds.map((speed) {
-              return ListTile(
-                title: Text(
-                  '${speed}x',
-                  style: const TextStyle(color: Colors.white),
-                ),
-                onTap: () {
-                  _controller.setSpeed(speed);
-                  Navigator.pop(context);
-                },
-              );
-            }).toList(),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showVolumeSlider() {
-    double currentVolume = _controller.volume; // Use current volume
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black87,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return Container(
-              padding: const EdgeInsets.all(24.0),
-              height: 250,
-              child: Column(
-                children: [
-                  const Text(
-                    'Volume',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Expanded(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          currentVolume == 0
-                              ? Icons.volume_off
-                              : currentVolume < 0.5
-                              ? Icons.volume_down
-                              : Icons.volume_up,
-                          color: Colors.white,
-                          size: 32,
+            // Ripple effect background
+            Positioned.fill(
+              child: ClipPath(
+                clipper: _SemiCircleClipper(isForward: widget.isForward),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: widget.isForward
+                          ? Alignment.centerLeft
+                          : Alignment.centerRight,
+                      radius: _rippleAnimation.value,
+                      colors: [
+                        Colors.white.withValues(
+                          alpha: 0.3 * _fadeAnimation.value,
                         ),
-                        const SizedBox(width: 20),
-                        Expanded(
-                          child: SliderTheme(
-                            data: SliderThemeData(
-                              activeTrackColor: Colors.red,
-                              inactiveTrackColor: Colors.white30,
-                              thumbColor: Colors.red,
-                              overlayColor: Colors.red.withOpacity(0.2),
-                              trackHeight: 4,
-                            ),
-                            child: Slider(
-                              value: currentVolume,
-                              min: 0.0,
-                              max: 1.0,
-                              divisions: 20,
-                              label: '${(currentVolume * 100).round()}%',
-                              onChanged: (value) {
-                                setState(() {
-                                  currentVolume = value;
-                                });
-                                _controller.setVolume(value);
-                              },
-                            ),
-                          ),
+                        Colors.white.withValues(
+                          alpha: 0.1 * _fadeAnimation.value,
                         ),
-                        const SizedBox(width: 10),
-                        Text(
-                          '${(currentVolume * 100).round()}%',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        ),
+                        Colors.transparent,
                       ],
+                      stops: const [0.0, 0.5, 1.0],
                     ),
                   ),
-                ],
+                ),
               ),
-            );
-          },
+            ),
+            // Icon and text
+            Positioned(
+              left: widget.isForward ? 100 : null,
+              right: widget.isForward ? null : 100,
+              child: Opacity(
+                opacity: _fadeAnimation.value,
+                child: Transform.scale(
+                  scale: 0.8 + (0.2 * _iconAnimation.value),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Animated arrows
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: widget.isForward
+                            ? [_buildArrow(0.0)]
+                            : [_buildArrow(0.0, reverse: true)],
+                      ),
+                      const SizedBox(height: 8),
+                      // Seconds text
+                      Text(
+                        '${widget.seconds} seconds',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          shadows: [
+                            Shadow(blurRadius: 4, color: Colors.black54),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
   }
 
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes.remainder(60);
-    final seconds = duration.inSeconds.remainder(60);
-
-    if (hours > 0) {
-      return '$hours:${twoDigits(minutes)}:${twoDigits(seconds)}';
-    }
-    return '${twoDigits(minutes)}:${twoDigits(seconds)}';
+  Widget _buildArrow(double delay, {bool reverse = false}) {
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 400),
+      tween: Tween(begin: 0.0, end: 1.0),
+      curve: Curves.easeOut,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.translate(
+            offset: Offset(reverse ? (1 - value) * -10 : (1 - value) * 10, 0),
+            child: Icon(
+              reverse ? Icons.fast_rewind : Icons.fast_forward,
+              color: Colors.white,
+              size: 32,
+            ),
+          ),
+        );
+      },
+    );
   }
+}
+
+/// Clips the widget to create a semi-circle shape for the ripple effect
+class _SemiCircleClipper extends CustomClipper<Path> {
+  final bool isForward;
+
+  _SemiCircleClipper({required this.isForward});
+
+  @override
+  Path getClip(Size size) {
+    final path = Path();
+    if (isForward) {
+      // Left side semi-circle (curves to the right)
+      path.moveTo(0, 0);
+      path.lineTo(0, size.height);
+      path.quadraticBezierTo(size.width * 1.2, size.height / 2, 0, 0);
+    } else {
+      // Right side semi-circle (curves to the left)
+      path.moveTo(size.width, 0);
+      path.lineTo(size.width, size.height);
+      path.quadraticBezierTo(-size.width * 0.2, size.height / 2, size.width, 0);
+    }
+    path.close();
+    return path;
+  }
+
+  @override
+  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
 }

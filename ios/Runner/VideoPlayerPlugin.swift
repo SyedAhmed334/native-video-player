@@ -47,6 +47,7 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     
     // State tracking
     private var isBuffering: Bool = false
+    private var isPlaying: Bool = false
     private var currentUrl: String?
     private var timeObserver: Any?
     
@@ -147,6 +148,9 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             }
             setQuality(index: index, result: result)
             
+        case "setAutoQuality":
+            setAutoQuality(result: result)
+            
         case "getAvailableAudioTracks":
             getAvailableAudioTracks(result: result)
             
@@ -203,8 +207,14 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             return
         }
         
-        // Create player item
+        // Create player item with buffer configuration
         playerItem = AVPlayerItem(url: videoUrl)
+        
+        // Configure buffer settings for smooth seeking
+        // preferredForwardBufferDuration: How much to buffer ahead (in seconds)
+        // iOS automatically manages back buffer but we can influence forward buffer
+        playerItem?.preferredForwardBufferDuration = 60  // Buffer 60 seconds ahead
+        playerItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         
         // Create player
         player = AVPlayer(playerItem: playerItem)
@@ -335,7 +345,22 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         playerItem?.preferredMaximumResolution = resolution
         
         selectedQualityIndex = index
-        sendEvent(["event": "qualityChanged", "index": index])
+        sendEvent(["event": "qualityChanged", "index": index, "isAuto": false])
+        result(nil)
+    }
+    
+    /// Set auto quality - ADAPTIVE BITRATE (Netflix/YouTube-style)
+    /// Clears constraints and lets AVPlayer's ABR algorithm choose
+    /// the optimal quality based on network conditions
+    private func setAutoQuality(result: @escaping FlutterResult) {
+        // Reset bitrate constraint to 0 (unlimited/automatic)
+        playerItem?.preferredPeakBitRate = 0
+        
+        // Reset resolution constraint to allow any resolution
+        playerItem?.preferredMaximumResolution = CGSize.zero
+        
+        selectedQualityIndex = -1
+        sendEvent(["event": "qualityChanged", "index": -1, "isAuto": true])
         result(nil)
     }
     
@@ -610,11 +635,11 @@ public class VideoPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             "duration": duration
         ])
         
-        // Send playback state
-        if player.rate > 0 {
-            sendEvent(["playbackState": "playing"])
-        } else {
-            sendEvent(["playbackState": "paused"])
+        // Send playback state only when it changes
+        let currentlyPlaying = player.rate > 0
+        if currentlyPlaying != isPlaying {
+            isPlaying = currentlyPlaying
+            sendEvent(["playbackState": isPlaying ? "playing" : "paused"])
         }
     }
     
