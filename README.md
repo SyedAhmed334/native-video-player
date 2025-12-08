@@ -1,279 +1,470 @@
-# Custom Flutter Video Player
+# Native Video Player
 
-A Netflix-smooth custom video player built from scratch using Flutter MethodChannel + Java + ExoPlayer 3.x (Media3).
+A premium native video player for Flutter with multi-instance support, HLS/DASH streaming, DRM protection, analytics, and production-ready features.
+
+[![pub package](https://img.shields.io/pub/v/native_video_player.svg)](https://pub.dev/packages/native_video_player)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
-✅ **Seamless Quality Switching** - Change video quality without pausing or reloading  
-✅ **Instant Audio Track Switching** - Switch audio languages immediately  
-✅ **Instant Subtitle Switching** - Toggle subtitles on/off or change languages instantly  
-✅ **True Adaptive Bitrate Streaming** - Automatic quality adjustment based on network  
-✅ **Offline Playback Support** - Play downloaded videos from local storage  
-✅ **External Subtitle Loading** - Load .vtt or .srt subtitle files  
-✅ **Multiple Format Support** - HLS (.m3u8), DASH (.mpd), MP4, and more  
-✅ **Netflix-Style UI** - Beautiful, responsive controls with smooth animations  
+### Core
+- 🎬 **Native Performance** - ExoPlayer (Android) + AVPlayer (iOS)
+- 📱 **Multi-Instance** - Multiple players with LRU eviction
+- 🔄 **HLS & DASH** - Adaptive streaming support
+- ⚙️ **Quality Switching** - Manual and auto ABR
+- 🔊 **Audio Tracks** - Multi-track selection
+- 📝 **Subtitles** - Built-in text rendering
+- 💾 **Caching** - Segment preloading
+- 📺 **Picture-in-Picture** - Native PiP
 
-## Architecture
+### Premium (Tier 1)
+- 📊 **Analytics Hooks** - Event tracking callbacks
+- 🖼️ **Thumbnail Preview** - Seek preview with sprite sheets
+- 🔐 **DRM Support** - Widevine (Android) + FairPlay (iOS)
+- 📡 **Chromecast/AirPlay** - Full casting support
 
-```
-Flutter UI Layer
-    ↓ (MethodChannel - Commands)
-    ↓ (EventChannel - Events)
-    ↓ (Texture - Video Frames)
-Java VideoPlayerPlugin
-    ↓
-ExoPlayer 3.x (Media3)
-    ├── DefaultTrackSelector (Quality/Audio/Subtitle switching)
-    ├── MediaSourceFactory (HLS/DASH/MP4 support)
-    └── SurfaceTexture (Hardware-accelerated rendering)
-```
+### Performance (Tier 3)
+- 🔄 **Error Recovery** - Auto-retry with categorization
+- 📈 **Buffer Health** - Real-time monitoring
 
-## Setup
+---
 
-### 1. Dependencies
+## Installation
 
-The project uses:
-- **ExoPlayer 3.x (Media3)** for native video playback
-- **permission_handler** for runtime permissions
-
-All dependencies are already configured in:
-- `android/app/build.gradle.kts` - ExoPlayer dependencies
-- `pubspec.yaml` - Flutter dependencies
-
-### 2. Permissions
-
-All necessary permissions are configured in `android/app/src/main/AndroidManifest.xml`:
-- `INTERNET` - For streaming videos
-- `WAKE_LOCK` - Prevent screen sleep during playback
-- `ACCESS_NETWORK_STATE` - For adaptive streaming
-- `READ_EXTERNAL_STORAGE` - For offline playback (Android 12 and below)
-- `READ_MEDIA_VIDEO` - For offline playback (Android 13+)
-
-### 3. Run the App
-
-```bash
-# Get dependencies
-flutter pub get
-
-# Run on Android device/emulator
-flutter run
+```yaml
+dependencies:
+  native_video_player: ^1.0.0
 ```
 
-## Usage
+---
 
-### Basic Usage
+## Quick Start
 
 ```dart
-import 'package:custom_video_player/widgets/custom_video_player.dart';
+import 'package:native_video_player/native_video_player.dart';
 
-// Play a video
-Navigator.push(
-  context,
-  MaterialPageRoute(
-    builder: (context) => CustomVideoPlayer(
-      url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-      autoPlay: true,
-    ),
+CustomVideoPlayer(
+  url: 'https://example.com/video.m3u8',
+)
+```
+
+---
+
+## Complete API
+
+### CustomVideoPlayer Widget
+
+```dart
+CustomVideoPlayer(
+  url: 'https://example.com/video.m3u8',
+  
+  // Theming
+  theme: VideoPlayerTheme.dark,
+  config: VideoPlayerConfig.standard,
+  
+  // Custom UI
+  customControlsBuilder: (context, controller) => MyControls(controller),
+  
+  // Callbacks
+  onReady: () => print('Ready'),
+  onComplete: () => print('Finished'),
+  onError: (msg) => print('Error: $msg'),
+  
+  // Analytics
+  onAnalyticsEvent: (event) {
+    analytics.track(event.type.name, event.toMap());
+  },
+)
+```
+
+### VideoPlayerController
+
+```dart
+// Access via customControlsBuilder
+controller.play();
+controller.pause();
+controller.togglePlayPause();
+controller.seekTo(Duration(seconds: 30));
+controller.rewind(seconds: 10);
+controller.forward(seconds: 10);
+
+// State (ValueNotifiers)
+controller.isPlaying.value;        // bool
+controller.position.value;         // Duration
+controller.duration.value;         // Duration
+controller.bufferedPosition.value; // Duration
+controller.isBuffering.value;      // bool
+controller.volume.value;           // double (0.0-1.0)
+
+// Tracks
+controller.availableQualities.value;   // List<VideoQuality>
+controller.availableAudioTracks.value; // List<AudioTrack>
+controller.availableSubtitles.value;   // List<SubtitleTrack>
+controller.setQuality(index, context);
+controller.setAudioTrack(index, context);
+controller.setSubtitle(index, context);
+
+// Error Recovery
+controller.hasError.value;     // bool
+controller.lastError.value;    // PlaybackError?
+controller.clearError();       // Reset and retry
+
+// Buffer Health
+controller.bufferHealth.value; // double (0.0-1.0)
+controller.isBufferLow.value;  // bool
+```
+
+---
+
+## Feed/Stories Mode
+
+### PreloadManager for TikTok/Reels
+
+```dart
+class VideoFeed extends StatefulWidget {
+  final List<String> urls;
+  @override
+  State<VideoFeed> createState() => _VideoFeedState();
+}
+
+class _VideoFeedState extends State<VideoFeed> {
+  late PreloadManager _preloadManager;
+  
+  @override
+  void initState() {
+    super.initState();
+    _preloadManager = PreloadManager(
+      urls: widget.urls,
+      config: PreloadConfig.balanced,
+    );
+  }
+  
+  @override
+  void dispose() {
+    _preloadManager.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return PageView.builder(
+      scrollDirection: Axis.vertical,
+      itemCount: widget.urls.length,
+      onPageChanged: _preloadManager.onPageChanged,
+      itemBuilder: (_, index) => VideoFeedPlayer(
+        url: widget.urls[index],
+        index: index,
+        isActive: true,
+        loop: true,
+      ),
+    );
+  }
+}
+```
+
+---
+
+## DRM Protected Content
+
+### Widevine (Android)
+
+```dart
+await player.initialize(
+  url,
+  drmConfig: DrmConfig.widevine(
+    licenseUrl: 'https://license.example.com/widevine',
+    headers: {'Authorization': 'Bearer token'},
   ),
 );
 ```
 
-### Advanced Usage
+### FairPlay (iOS)
 
 ```dart
-import 'package:custom_video_player/services/native_video_player.dart';
-
-// Create controller
-final controller = NativeVideoPlayer();
-
-// Set up callbacks
-controller.onInitialized = () {
-  print('Player initialized');
-};
-
-controller.onPositionUpdate = (position, buffered, duration) {
-  print('Position: $position / $duration');
-};
-
-controller.onQualityChanged = (index) {
-  print('Quality changed to index: $index');
-};
-
-// Initialize with URL
-await controller.initialize('https://example.com/video.m3u8');
-
-// Play
-await controller.play();
-
-// Change quality (seamless, no reload)
-await controller.setQuality(2);
-
-// Change audio track (instant)
-await controller.setAudioTrack(1);
-
-// Toggle subtitles (instant)
-await controller.setSubtitle(0); // Enable
-await controller.setSubtitle(-1); // Disable
-
-// Load external subtitle
-await controller.loadExternalSubtitle('https://example.com/subtitle.vtt');
-
-// Offline playback
-await controller.enableOfflineMode('/storage/emulated/0/video.mp4');
-
-// Clean up
-await controller.dispose();
-```
-
-## API Reference
-
-### NativeVideoPlayer Methods
-
-| Method | Description |
-|--------|-------------|
-| `initialize(String url)` | Initialize player with video URL |
-| `play()` | Start playback |
-| `pause()` | Pause playback |
-| `seekTo(Duration position)` | Seek to position |
-| `setVolume(double volume)` | Set volume (0.0 - 1.0) |
-| `setSpeed(double speed)` | Set playback speed |
-| `getDuration()` | Get video duration |
-| `getCurrentPosition()` | Get current position |
-| `getBufferedPosition()` | Get buffered position |
-| `getAvailableQualities()` | Get available quality tracks |
-| `setQuality(int index)` | Set quality (seamless) |
-| `getAvailableAudioTracks()` | Get available audio tracks |
-| `setAudioTrack(int index)` | Set audio track (instant) |
-| `getAvailableSubtitles()` | Get available subtitles |
-| `setSubtitle(int index)` | Set subtitle (-1 to disable) |
-| `loadExternalSubtitle(String url)` | Load external subtitle file |
-| `enableOfflineMode(String path)` | Enable offline playback |
-| `dispose()` | Release resources |
-
-### Callbacks
-
-| Callback | Description |
-|----------|-------------|
-| `onInitialized` | Called when player is ready |
-| `onPositionUpdate` | Called every 500ms with position info |
-| `onPlaybackStateChanged` | Called when play/pause state changes |
-| `onBufferingStateChanged` | Called when buffering starts/stops |
-| `onCompleted` | Called when video ends |
-| `onError` | Called on errors |
-| `onQualityChanged` | Called when quality changes |
-| `onAudioChanged` | Called when audio track changes |
-| `onSubtitleChanged` | Called when subtitle changes |
-
-## Supported Formats
-
-- **HLS** (.m3u8) - HTTP Live Streaming with adaptive bitrate
-- **DASH** (.mpd) - Dynamic Adaptive Streaming over HTTP
-- **MP4** - Standard MP4 files
-- **Progressive** - Any format supported by ExoPlayer
-
-## Test Videos
-
-The demo app includes several test videos:
-
-1. **Big Buck Bunny (MP4)** - Standard MP4 format
-2. **Sintel (HLS)** - HLS with multiple qualities
-3. **Tears of Steel (DASH)** - DASH adaptive streaming
-4. **Elephant Dream (HLS)** - HLS with audio tracks and subtitles
-
-## How It Works
-
-### Seamless Quality Switching
-
-Unlike traditional players that reload the entire video when changing quality, this player uses ExoPlayer's `TrackSelectionOverride` to switch tracks without interrupting playback:
-
-```java
-TrackSelectionOverride override = new TrackSelectionOverride(
-    trackGroup, 
-    selectedTrackIndex
-);
-trackSelector.setParameters(
-    trackSelector.buildUponParameters()
-        .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-        .addOverride(override)
+await player.initialize(
+  url,
+  drmConfig: DrmConfig.fairPlay(
+    licenseUrl: 'https://license.example.com/fairplay',
+    certificateUrl: 'https://cert.example.com/fairplay.cer',
+    headers: {'Authorization': 'Bearer token'},
+  ),
 );
 ```
 
-This maintains the buffer and provides sub-second switching latency.
+---
 
-### Texture Rendering
+## Chromecast / AirPlay
 
-Video frames are rendered to a native `SurfaceTexture` and shared with Flutter via a texture ID:
+### CastButton Widget
 
-```java
-textureEntry = textureRegistry.createSurfaceTexture();
-surface = new Surface(textureEntry.surfaceTexture());
-player.setVideoSurface(surface);
+```dart
+// Add to your player controls
+CastButton(
+  color: Colors.white,
+  size: 24,
+  onDeviceSelected: (device) {
+    print('Connected to ${device.name}');
+  },
+)
 ```
 
-Flutter then renders the texture using the `Texture` widget, providing hardware-accelerated performance.
+### CastService API
 
-### Event Streaming
+```dart
+final cast = CastService();
 
-Player events are streamed to Flutter via `EventChannel`:
+// Initialize
+await cast.initialize();
 
-```java
-eventSink.success(Map.of(
-    "event", "position",
-    "position", player.getCurrentPosition(),
-    "bufferedPosition", player.getBufferedPosition()
-));
+// Get available devices
+final devices = await cast.getDevices();
+
+// Connect to device
+await cast.castTo(devices.first);
+
+// Load and control media
+await cast.loadMedia(
+  url: 'https://example.com/video.m3u8',
+  title: 'My Video',
+  startPosition: Duration(seconds: 30),
+);
+
+cast.play();
+cast.pause();
+cast.seekTo(Duration(minutes: 5));
+cast.stop();
+cast.disconnect();
 ```
 
-This provides real-time updates without polling.
+### Platform Notes
 
-## Project Structure
+| Platform | Cast Support |
+|----------|--------------|
+| Android | Full Chromecast SDK |
+| iOS | Native AirPlay via Control Center |
 
+---
+
+## Analytics
+
+```dart
+CustomVideoPlayer(
+  url: url,
+  onAnalyticsEvent: (event) {
+    // event.type: play, pause, seek, qualityChange, error, etc.
+    // event.position: current playback position
+    // event.timestamp: when event occurred
+    // event.metadata: additional data
+    
+    myAnalytics.track(event.type.name, event.toMap());
+  },
+)
 ```
-lib/
-├── models/
-│   └── video_track_models.dart    # Data models for tracks
-├── services/
-│   ├── native_video_player.dart   # Main controller
-│   └── permission_helper.dart     # Permission handling
-├── widgets/
-│   └── custom_video_player.dart   # Video player UI
-└── main.dart                       # Demo app
 
-android/app/src/main/java/com/example/custom_video_player/
-└── VideoPlayerPlugin.java          # Native ExoPlayer implementation
+### Event Types
+
+| Event | Description |
+|-------|-------------|
+| `play` | Playback started |
+| `pause` | Playback paused |
+| `seek` | User seeked (includes from/to) |
+| `complete` | Video finished |
+| `qualityChange` | Quality switched |
+| `audioTrackChange` | Audio track changed |
+| `subtitleChange` | Subtitle changed |
+| `bufferStart` | Buffering started |
+| `bufferEnd` | Buffering ended |
+| `error` | Playback error |
+
+---
+
+## Thumbnail Preview
+
+```dart
+// Configure sprite sheet
+final thumbnailConfig = ThumbnailConfig(
+  spriteUrl: 'https://example.com/thumbnails.jpg',
+  columns: 10,
+  rows: 10,
+  thumbnailWidth: 160,
+  thumbnailHeight: 90,
+  interval: Duration(seconds: 5),
+);
+
+// Use in seek bar
+SeekBarThumbnailPreview(
+  config: thumbnailConfig,
+  position: seekPosition,
+  duration: totalDuration,
+  isSeeking: isDragging,
+  seekBarWidth: MediaQuery.of(context).size.width,
+  seekProgress: progress,
+)
 ```
 
-## Performance
+---
 
-- **Quality switching**: < 1 second
-- **Audio switching**: < 500ms
-- **Subtitle switching**: < 500ms
-- **Seek latency**: < 200ms
-- **Memory usage**: Optimized with proper buffer management
+## Error Recovery
 
-## Troubleshooting
+```dart
+ValueListenableBuilder<PlaybackError?>(
+  valueListenable: controller.lastError,
+  builder: (context, error, _) {
+    if (error == null) return SizedBox.shrink();
+    
+    return ErrorOverlay(
+      error: error,
+      onRetry: () {
+        controller.clearError();
+        controller.nativePlayer.initialize(url);
+      },
+    );
+  },
+)
+```
 
-### Video not playing
-- Check internet connection
-- Verify URL is accessible
-- Check logcat for errors: `flutter logs`
+### Error Types
 
-### Quality switching not working
-- Ensure video has multiple quality tracks (HLS/DASH)
-- Check that adaptive streaming is enabled
+| Type | Recoverable | Description |
+|------|-------------|-------------|
+| `network` | ✅ | Connection lost |
+| `server` | ✅ | HTTP error (404, 500) |
+| `drm` | ✅ | License error |
+| `format` | ❌ | Unsupported codec |
+| `source` | ❌ | Invalid URL |
+| `decoder` | ❌ | Render error |
 
-### Offline playback not working
-- Request storage permission first
-- Verify file path is correct
-- Ensure file format is supported
+---
+
+## Buffer Health
+
+```dart
+ValueListenableBuilder<double>(
+  valueListenable: controller.bufferHealth,
+  builder: (_, health, __) => BufferHealthIndicator(
+    health: health,  // 0.0 to 1.0
+    isVisible: controller.isPlaying.value,
+  ),
+)
+```
+
+---
+
+## Theming
+
+### Built-in Themes
+
+```dart
+VideoPlayerTheme.dark    // Netflix style
+VideoPlayerTheme.light   // Light UI
+VideoPlayerTheme.minimal // Subtle controls
+```
+
+### Custom Theme
+
+```dart
+VideoPlayerTheme(
+  primaryColor: Colors.purple,
+  progressBarColor: Colors.purple,
+  controlsBackgroundColor: Colors.black87,
+  iconColor: Colors.white,
+  iconSize: 28,
+  centerIconSize: 64,
+)
+```
+
+---
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `autoPlay` | bool | true | Auto-start |
+| `loop` | bool | false | Loop video |
+| `muted` | bool | false | Start muted |
+| `volume` | double | 1.0 | Initial volume |
+| `seekDuration` | Duration | 10s | Seek amount |
+| `controlsAutoHideDuration` | Duration | 3s | Auto-hide delay |
+| `showControls` | bool | true | Show controls |
+| `enableDoubleTapSeek` | bool | true | Double-tap seek |
+| `enableCaching` | bool | false | Segment caching |
+| `cacheMaxSizeMB` | int | 100 | Max cache |
+| `maxPlayerInstances` | int | 3 | Max players |
+
+### Presets
+
+```dart
+VideoPlayerConfig.standard  // Single video
+VideoPlayerConfig.feed      // TikTok/Reels optimized
+```
+
+---
+
+## Player Manager
+
+```dart
+final manager = PlayerManager.instance;
+
+manager.setPoolSize(5);
+final player = manager.acquire(id: 'video-1');
+await manager.release('video-1');
+
+// Lifecycle
+manager.onAppPaused();
+manager.onAppResumed();
+manager.onMemoryWarning();
+
+// Cache
+await manager.clearCache();
+final size = await manager.getCacheSize();
+```
+
+---
+
+## Platform Setup
+
+### Android
+
+`android/app/src/main/AndroidManifest.xml`:
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+```
+
+For PiP:
+```xml
+<activity
+    android:supportsPictureInPicture="true"
+    android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
+```
+
+### iOS
+
+`ios/Runner/Info.plist`:
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+</dict>
+```
+
+For PiP:
+```xml
+<key>UIBackgroundModes</key>
+<array>
+    <string>audio</string>
+</array>
+```
+
+---
+
+## Requirements
+
+- Flutter >= 3.22.0
+- Dart >= 3.5.0
+- Android minSdk: 21
+- iOS: 12.0+
 
 ## License
 
-This is a demonstration project for educational purposes.
-
-## Credits
-
-Built with:
-- Flutter SDK
-- ExoPlayer 3.x (Media3) by Google
-- permission_handler package
+MIT License - see [LICENSE](LICENSE)
