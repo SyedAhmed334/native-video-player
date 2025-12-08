@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:get/get_navigation/get_navigation.dart';
 import 'widgets/custom_video_player.dart';
 
 void main() {
@@ -11,7 +10,7 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GetMaterialApp(
+    return MaterialApp(
       title: 'Custom Video Player Demo',
       theme: ThemeData(primarySwatch: Colors.red, brightness: Brightness.dark),
       home: const VideoListScreen(),

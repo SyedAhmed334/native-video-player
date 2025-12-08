@@ -662,8 +662,12 @@ class _DoubleTapSeekAnimationState extends State<_DoubleTapSeekAnimation>
                           : Alignment.centerRight,
                       radius: _rippleAnimation.value,
                       colors: [
-                        Colors.white.withOpacity(0.3 * _fadeAnimation.value),
-                        Colors.white.withOpacity(0.1 * _fadeAnimation.value),
+                        Colors.white.withValues(
+                          alpha: 0.3 * _fadeAnimation.value,
+                        ),
+                        Colors.white.withValues(
+                          alpha: 0.1 * _fadeAnimation.value,
+                        ),
                         Colors.transparent,
                       ],
                       stops: const [0.0, 0.5, 1.0],

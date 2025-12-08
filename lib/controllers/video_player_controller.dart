@@ -765,7 +765,7 @@ class VideoPlayerController {
                           activeTrackColor: Colors.red,
                           inactiveTrackColor: Colors.white30,
                           thumbColor: Colors.red,
-                          overlayColor: Colors.red.withOpacity(0.2),
+                          overlayColor: Colors.red.withValues(alpha: 0.2),
                           trackHeight: 4,
                         ),
                         child: Slider(
