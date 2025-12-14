@@ -2,6 +2,13 @@ package com.example.native_video_player
 
 import android.app.Activity
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.NonNull
 import androidx.media3.common.util.UnstableApi
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -25,7 +32,7 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         private const val TAG = "NativeVideoPlayerPlugin"
         
         // Maximum concurrent players to prevent memory exhaustion
-        private const val MAX_PLAYERS = 5
+        private const val MAX_PLAYERS = 10
     }
 
     private lateinit var methodChannel: MethodChannel
@@ -43,6 +50,12 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     // Cast manager for Chromecast
     private var castManager: CastManager? = null
     
+    // Network monitoring
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var isNetworkAvailable: Boolean = true
+    private var currentNetworkType: String = "unknown"
+    
     private lateinit var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding
 
     override fun onAttachedToEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
@@ -55,6 +68,9 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
 
         // Initialize video cache
         VideoCacheManager.initialize(context)
+        
+        // Start network monitoring
+        startNetworkMonitoring()
 
         android.util.Log.d(TAG, "Plugin attached to engine")
     }
@@ -69,8 +85,94 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
 
         // Release cache
         VideoCacheManager.release()
+        
+        // Stop network monitoring
+        stopNetworkMonitoring()
 
         android.util.Log.d(TAG, "Plugin detached from engine")
+    }
+    
+    // MARK: - Network Monitoring
+    
+    private fun startNetworkMonitoring() {
+        connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Handler(Looper.getMainLooper()).post {
+                    updateNetworkStatus()
+                }
+            }
+            
+            override fun onLost(network: Network) {
+                Handler(Looper.getMainLooper()).post {
+                    isNetworkAvailable = false
+                    currentNetworkType = "none"
+                    broadcastNetworkChange()
+                }
+            }
+            
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                Handler(Looper.getMainLooper()).post {
+                    updateNetworkStatus()
+                }
+            }
+        }
+        
+        try {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityManager?.registerNetworkCallback(request, networkCallback!!)
+            
+            // Initial status check
+            updateNetworkStatus()
+            android.util.Log.d(TAG, "Network monitoring started")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to start network monitoring: ${e.message}")
+        }
+    }
+    
+    private fun stopNetworkMonitoring() {
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+            networkCallback = null
+            connectivityManager = null
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error stopping network monitoring: ${e.message}")
+        }
+    }
+    
+    private fun updateNetworkStatus() {
+        val activeNetwork = connectivityManager?.activeNetwork
+        val capabilities = connectivityManager?.getNetworkCapabilities(activeNetwork)
+        
+        isNetworkAvailable = capabilities != null
+        
+        currentNetworkType = when {
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cellular"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "ethernet"
+            capabilities != null -> "other"
+            else -> "none"
+        }
+        
+        broadcastNetworkChange()
+    }
+    
+    private fun broadcastNetworkChange() {
+        val event = mapOf(
+            "event" to "networkChanged",
+            "isConnected" to isNetworkAvailable,
+            "type" to currentNetworkType
+        )
+        
+        // Broadcast to all active players
+        players.values.forEach { player ->
+            player.eventSink?.success(event)
+        }
+        
+        android.util.Log.d(TAG, "Network: $currentNetworkType, connected: $isNetworkAvailable")
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -214,14 +316,15 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     }
                 }
                 "enterPiP" -> {
-                    // PiP needs special handling
-                    result.error("NOT_IMPLEMENTED", "PiP not yet implemented in multi-instance mode", null)
+                    getPlayer(playerId, result)?.let {
+                        val success = it.enterPiP()
+                        result.success(success)
+                    }
                 }
                 "getNetworkStatus" -> {
-                    // Network status is global
                     result.success(mapOf(
-                        "isConnected" to true,
-                        "type" to "unknown"
+                        "isConnected" to isNetworkAvailable,
+                        "type" to currentNetworkType
                     ))
                 }
                 "dispose" -> {
@@ -241,6 +344,15 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                 }
                 "isCacheEnabled" -> {
                     result.success(VideoCacheManager.isAvailable())
+                }
+                "prefetchHeadless" -> {
+                    val url = call.argument<String>("url")
+                    if (url != null) {
+                        VideoCacheManager.prefetch(context, url)
+                        result.success(null)
+                    } else {
+                        result.error("INVALID_ARGS", "Missing url", null)
+                    }
                 }
                 // Cast methods
                 "initCast" -> {

@@ -16,11 +16,18 @@ class VideoPlayerInstance: NSObject {
     private var textureId: Int64?
     private var displayLink: CADisplayLink?
     
+    // PiP support
+    private var playerLayer: AVPlayerLayer?
+    private var pipController: AVPictureInPictureController?
+    
     // Event sink
     var eventSink: FlutterEventSink?
     
     // Observers
     private var playerObservers: [NSKeyValueObservation] = []
+    
+    // Subtitle output
+    private var legibleOutput: AVPlayerItemLegibleOutput?
     private var timeObserver: Any?
     
     // Track information
@@ -73,8 +80,18 @@ class VideoPlayerInstance: NSObject {
         }
         
         do {
+        // Check for cached file
+        var targetURL = videoURL
+        if let cachedFile = VideoCacheManager.shared.getCachedFile(for: url) {
+            print("[VideoPlayerInstance:\(playerId)] Playing from cache: \(cachedFile.lastPathComponent)")
+            targetURL = cachedFile
+        } else {
+            print("[VideoPlayerInstance:\(playerId)] Playing from network: \(url)")
+        }
+        
+
             // Create player
-            playerItem = AVPlayerItem(url: videoURL)
+            playerItem = AVPlayerItem(url: targetURL)
             player = AVPlayer(playerItem: playerItem)
             
             guard let player = player else {
@@ -96,6 +113,7 @@ class VideoPlayerInstance: NSObject {
             // Setup observers
             setupObservers()
             setupDisplayLink()
+            setupSubtitleOutput()
             
             // Configure audio session
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -108,6 +126,7 @@ class VideoPlayerInstance: NSObject {
             sendEvent(["event": "error", "message": "Initialization error: \(error.localizedDescription)"])
             dispose()
             return -1
+        }
     }
     
     /// Initialize with FairPlay DRM protected content
@@ -203,9 +222,10 @@ class VideoPlayerInstance: NSObject {
     private var drmHeaders: [String: String]?
     
     func preload(url: String) -> Int64 {
+        // Initialize (will use cache if available)
         let tid = initialize(url: url)
         player?.pause()
-        print("[VideoPlayerInstance:\(playerId)] Preloaded: \(url)")
+        // print("[VideoPlayerInstance:\(playerId)] Preloaded (Instance): \(url)")
         return tid
     }
     
@@ -250,6 +270,48 @@ class VideoPlayerInstance: NSObject {
         let range = first.timeRangeValue
         let bufferedEnd = CMTimeGetSeconds(range.start) + CMTimeGetSeconds(range.duration)
         return Int64(bufferedEnd * 1000)
+    }
+    
+    // MARK: - Picture-in-Picture
+    
+    func enterPiP(result: @escaping FlutterResult) {
+        // Lazy create player layer if needed
+        if playerLayer == nil, let player = player {
+            playerLayer = AVPlayerLayer(player: player)
+            setupPiP()
+        }
+        
+        guard let pipController = pipController else {
+            result(FlutterError(code: "PIP_NOT_READY", message: "PiP controller not initialized", details: nil))
+            return
+        }
+        
+        if pipController.isPictureInPicturePossible {
+            pipController.startPictureInPicture()
+            result(true)
+        } else {
+            result(FlutterError(code: "PIP_NOT_POSSIBLE", message: "PiP not possible at this time", details: nil))
+        }
+    }
+    
+    private func setupPiP() {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            print("[VideoPlayerInstance:\(playerId)] PiP not supported on this device")
+            return
+        }
+        
+        guard let layer = playerLayer else { return }
+        
+        // PiP requires the layer to be in the view hierarchy
+        if let rootViewController = UIApplication.shared.keyWindow?.rootViewController {
+            layer.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+            rootViewController.view.layer.addSublayer(layer)
+        }
+        
+        pipController = AVPictureInPictureController(playerLayer: layer)
+        pipController?.delegate = self
+        
+        print("[VideoPlayerInstance:\(playerId)] PiP controller initialized")
     }
     
     // MARK: - Tracks
@@ -484,6 +546,17 @@ class VideoPlayerInstance: NSObject {
     private func setupDisplayLink() {
         displayLink = CADisplayLink(target: self, selector: #selector(displayLinkCallback))
         displayLink?.add(to: .main, forMode: .common)
+    }
+    
+    private func setupSubtitleOutput() {
+        guard let playerItem = playerItem else { return }
+        
+        // Create legible output for subtitle text extraction
+        legibleOutput = AVPlayerItemLegibleOutput(mediaSubtypesForNativeRepresentation: [])
+        legibleOutput?.setDelegate(self, queue: DispatchQueue.main)
+        playerItem.add(legibleOutput!)
+        
+        print("[VideoPlayerInstance:\(playerId)] Subtitle output configured")
     }
     
     @objc private func displayLinkCallback() {
@@ -740,5 +813,36 @@ extension VideoPlayerInstance: AVAssetResourceLoaderDelegate {
                 loadingRequest.finishLoading(with: error)
             }
         }.resume()
+    }
+}
+
+// MARK: - AVPlayerItemLegibleOutputPushDelegate for Subtitles
+
+extension VideoPlayerInstance: AVPlayerItemLegibleOutputPushDelegate {
+    func legibleOutput(_ output: AVPlayerItemLegibleOutput, didOutputAttributedStrings strings: [NSAttributedString], nativeSampleBuffers nativeSamples: [Any], forItemTime itemTime: CMTime) {
+        var text = ""
+        for string in strings {
+            text += string.string + "\n"
+        }
+        
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        sendEvent(["event": "subtitleText", "text": trimmedText])
+    }
+}
+
+// MARK: - AVPictureInPictureControllerDelegate
+
+extension VideoPlayerInstance: AVPictureInPictureControllerDelegate {
+    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        sendEvent(["event": "pipChanged", "isActive": true])
+    }
+    
+    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        sendEvent(["event": "pipChanged", "isActive": false])
+    }
+    
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
+        print("[VideoPlayerInstance:\(playerId)] PiP failed: \(error.localizedDescription)")
+        sendEvent(["event": "pipError", "message": error.localizedDescription])
     }
 }

@@ -67,6 +67,15 @@ class NativeVideoPlayer {
     }
   }
 
+  /// Prefetch video content without creating a player instance (headless)
+  static Future<void> prefetchHeadless(String url) async {
+    try {
+      await _methodChannel.invokeMethod('prefetchHeadless', {'url': url});
+    } catch (e) {
+      log('[NativeVideoPlayer] Failed to prefetch headless: $e');
+    }
+  }
+
   // State
   int? _textureId;
   Duration _position = Duration.zero;
@@ -110,7 +119,7 @@ class NativeVideoPlayer {
   Function()? onInitialized;
   Function()? onTracksLoaded;
   Function(Duration position, Duration bufferedPosition, Duration duration)?
-  onPositionUpdate;
+      onPositionUpdate;
   Function(bool isPlaying)? onPlaybackStateChanged;
   Function(bool isBuffering)? onBufferingStateChanged;
   Function()? onCompleted;
@@ -362,9 +371,8 @@ class NativeVideoPlayer {
         'getAvailableQualities',
         _withPlayerId({}),
       );
-      final qualities = (result as List)
-          .map((q) => VideoQuality.fromMap(q as Map))
-          .toList();
+      final qualities =
+          (result as List).map((q) => VideoQuality.fromMap(q as Map)).toList();
       _availableQualities = qualities;
       return qualities;
     } catch (e) {
@@ -405,9 +413,8 @@ class NativeVideoPlayer {
         'getAvailableAudioTracks',
         _withPlayerId({}),
       );
-      final tracks = (result as List)
-          .map((a) => AudioTrack.fromMap(a as Map))
-          .toList();
+      final tracks =
+          (result as List).map((a) => AudioTrack.fromMap(a as Map)).toList();
       _availableAudioTracks = tracks;
       return tracks;
     } catch (e) {
@@ -436,9 +443,8 @@ class NativeVideoPlayer {
         'getAvailableSubtitles',
         _withPlayerId({}),
       );
-      final subs = (result as List)
-          .map((s) => SubtitleTrack.fromMap(s as Map))
-          .toList();
+      final subs =
+          (result as List).map((s) => SubtitleTrack.fromMap(s as Map)).toList();
       _availableSubtitles = subs;
       return subs;
     } catch (e) {
@@ -567,9 +573,9 @@ class NativeVideoPlayer {
   /// Start event listener
   void _startEventListener() {
     _eventSubscription = _eventChannel.receiveBroadcastStream().listen(
-      (event) => _handleEvent(event as Map),
-      onError: (error) => onError?.call('Event error: $error'),
-    );
+          (event) => _handleEvent(event as Map),
+          onError: (error) => onError?.call('Event error: $error'),
+        );
   }
 
   /// Handle events

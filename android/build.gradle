@@ -54,8 +54,7 @@ dependencies {
     implementation 'androidx.media3:media3-ui:1.4.1'
     implementation 'androidx.media3:media3-datasource:1.4.1'
     
-    // DRM Support (Widevine)
-    implementation 'androidx.media3:media3-exoplayer-drm:1.4.1'
+    // DRM Support is built into media3-exoplayer core package
     
     // Cast SDK (Chromecast)
     implementation 'com.google.android.gms:play-services-cast-framework:21.4.0'

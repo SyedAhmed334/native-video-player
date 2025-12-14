@@ -1,10 +1,13 @@
 package com.example.native_video_player
 
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.Surface
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -16,6 +19,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -163,6 +167,7 @@ class VideoPlayerInstance(
             sendEvent(mapOf("event" to "error", "message" to "Initialization failed: ${e.message}"))
             dispose()
             -1L
+        }
     }
 
     /**
@@ -308,7 +313,7 @@ class VideoPlayerInstance(
                 val cacheDataSourceFactory = CacheDataSource.Factory()
                     .setCache(cache)
                     .setUpstreamDataSourceFactory(upstreamFactory)
-                    .setCacheWriteDataSinkFactory(null) // Read-only cache for now
+                    .setCacheWriteDataSinkFactory(CacheDataSink.Factory().setCache(cache).setFragmentSize(C.LENGTH_UNSET.toLong()))
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                 
                 android.util.Log.d(TAG, "[$playerId] Using cached media source")
@@ -399,6 +404,37 @@ class VideoPlayerInstance(
 
     fun getBufferedPosition(): Long {
         return player?.bufferedPosition ?: 0L
+    }
+
+    // MARK: - Picture-in-Picture
+    
+    /**
+     * Enter Picture-in-Picture mode (Android 8.0+)
+     * @return true if PiP was entered, false otherwise
+     */
+    fun enterPiP(): Boolean {
+        val currentActivity = activity ?: return false
+        
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            android.util.Log.w(TAG, "[$playerId] PiP requires Android 8.0 (API 26)+")
+            return false
+        }
+        
+        return try {
+            val aspectRatio = Rational(16, 9) // Default 16:9 aspect ratio
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(aspectRatio)
+                .build()
+            
+            currentActivity.enterPictureInPictureMode(params)
+            sendEvent(mapOf("event" to "pipChanged", "isActive" to true))
+            android.util.Log.d(TAG, "[$playerId] Entered PiP mode")
+            true
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "[$playerId] Failed to enter PiP: ${e.message}")
+            sendEvent(mapOf("event" to "pipError", "message" to (e.message ?: "Unknown error")))
+            false
+        }
     }
 
     fun getAvailableQualities(): List<Map<String, Any>> {
