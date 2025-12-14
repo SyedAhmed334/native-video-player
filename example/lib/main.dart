@@ -287,13 +287,16 @@ class _FeedDemoScreenState extends State<FeedDemoScreen> {
     "Big Buck Bunny (1MB)",
   ];
 
-  // Preloading controllers - No longer needed!
-  // Headless prefetching is stateless on Dart side
+  // Preloading controllers
+  final Map<int, VideoPlayerController> _controllers = {};
 
   @override
   void initState() {
     super.initState();
     _updateCacheSize();
+    // Initialize the first controller immediately
+    _createController(0);
+
     // Use addPostFrameCallback to start preloading after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _preloadNextVideos(0);
@@ -303,14 +306,74 @@ class _FeedDemoScreenState extends State<FeedDemoScreen> {
   @override
   void dispose() {
     _pageController.dispose();
+    for (var controller in _controllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
+  VideoPlayerController _createController(int index) {
+    if (_controllers.containsKey(index)) {
+      return _controllers[index]!;
+    }
+    final controller = VideoPlayerController(
+      url: _feedVideos[index],
+      autoPlay: false, // Don't autoplay pre-warmed videos
+    );
+
+    // Robust Initialization with Retry
+    _initializeWithRetry(controller, index);
+
+    _controllers[index] = controller;
+    return controller;
+  }
+
+  Future<void> _initializeWithRetry(
+    VideoPlayerController controller,
+    int index, {
+    int attempt = 1,
+  }) async {
+    try {
+      await controller.initialize();
+      print("Controller $index initialized (Attempt $attempt)");
+    } catch (e) {
+      print("Controller $index initialization failed (Attempt $attempt): $e");
+      if (attempt < 3 && mounted) {
+        // Wait and retry (backoff)
+        await Future.delayed(Duration(milliseconds: 500 * attempt));
+        // Check if controller is still needed/alive
+        if (_controllers.containsKey(index)) {
+          _initializeWithRetry(controller, index, attempt: attempt + 1);
+        }
+      }
+    }
+  }
+
   Future<void> _preloadNextVideos(int currentIndex) async {
-    // Determine which indices to preload (next 4 videos)
-    // TikTok-style: Just tell native to download the bytes.
-    // We don't need to keep any controllers alive!
-    for (int i = 1; i <= 4; i++) {
+    // 1. Cleanup old controllers (preserve current and immediate neighbors)
+    // Keep index-1, index, index+1, index+2
+    _controllers.keys
+        .where((k) => k < currentIndex - 1 || k > currentIndex + 2)
+        .toList()
+        .forEach((k) {
+          // Don't dispose the current one!
+          if (k != currentIndex) {
+            _controllers[k]?.dispose();
+            _controllers.remove(k);
+            print("Disposed controller: $k");
+          }
+        });
+
+    // 2. Pre-warm immediate next videos (Controllers)
+    for (int i = 1; i <= 2; i++) {
+      if (currentIndex + i < _feedVideos.length) {
+        _createController(currentIndex + i);
+        print("Pre-warming controller: ${currentIndex + i}");
+      }
+    }
+
+    // 3. Headless prefetch for further videos (Bytes only)
+    for (int i = 3; i <= 5; i++) {
       if (currentIndex + i < _feedVideos.length) {
         final url = _feedVideos[currentIndex + i];
         print("Prefetching (Headless) video ${currentIndex + i}: $url");
@@ -361,8 +424,10 @@ class _FeedDemoScreenState extends State<FeedDemoScreen> {
               _preloadNextVideos(index);
             },
             itemBuilder: (context, index) {
+              // Ensure controller exists
+              final controller = _createController(index);
               return VideoFeedPlayer(
-                url: _feedVideos[index],
+                controller: controller, // Pass existing controller
                 index: index,
                 isActive: index == _currentPage,
                 loop: true,
@@ -647,7 +712,7 @@ class _FeedDemoScreenState extends State<FeedDemoScreen> {
 }
 
 class VideoFeedPlayer extends StatefulWidget {
-  final String url;
+  final VideoPlayerController controller; // Use passed controller
   final int index;
   final bool isActive;
   final bool loop;
@@ -656,7 +721,7 @@ class VideoFeedPlayer extends StatefulWidget {
 
   const VideoFeedPlayer({
     super.key,
-    required this.url,
+    required this.controller,
     required this.index,
     required this.isActive,
     this.loop = false,
@@ -669,58 +734,76 @@ class VideoFeedPlayer extends StatefulWidget {
 }
 
 class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
-  late VideoPlayerController _controller;
+  // Removed local _controller
   bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController(
-      url: widget.url,
-      autoPlay: widget.isActive,
-    );
-
+    // Don't create new controller. Use widget.controller
     _initializePlayer();
   }
 
+  // No dispose here! Controller is owned by FeedDemoScreen
+
   void _initializePlayer() {
+    final controller = widget.controller;
+
     // Set network callback
     if (widget.onNetworkChanged != null) {
-      _controller.onNetworkChanged = (connected, type) {
+      controller.onNetworkChanged = (connected, type) {
         widget.onNetworkChanged!(connected, type);
       };
     }
 
-    _controller.initialize();
-    _controller.isInitialized.addListener(() {
-      if (mounted) {
-        setState(() => _isInitialized = _controller.isInitialized.value);
-        if (_isInitialized && widget.isActive) {
-          _controller.play();
-        }
-      }
-    });
+    // Controller is initialized by the parent (_createController)
+    // We just check status and listen
+    if (controller.isInitialized.value) {
+      _isInitialized = true;
+      if (widget.isActive) controller.play();
+    }
+    // If not initialized yet, we just wait for the listener updates.
+    // Do NOT call initialize() here as it causes double-native-player creation race conditions.
 
-    _controller.onError = (message) {
+    controller.isInitialized.addListener(_onControllerUpdate);
+    controller.onError = (message) {
       print("[VideoFeedPlayer] Error: $message");
     };
+  }
+
+  void _onControllerUpdate() {
+    if (mounted) {
+      setState(() => _isInitialized = widget.controller.isInitialized.value);
+      if (_isInitialized &&
+          widget.isActive &&
+          !widget.controller.isPlaying.value) {
+        // Only auto play if active and not already playing
+        widget.controller.play();
+      }
+    }
   }
 
   @override
   void didUpdateWidget(VideoFeedPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.controller != oldWidget.controller) {
+      // Handle controller swap (recycling) if necessary, though PageView usually rebuilds
+      oldWidget.controller.isInitialized.removeListener(_onControllerUpdate);
+      _initializePlayer();
+    }
+
     if (widget.isActive != oldWidget.isActive) {
       if (widget.isActive) {
-        _controller.play();
+        widget.controller.play();
       } else {
-        _controller.pause();
+        widget.controller.pause();
       }
     }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    widget.controller.isInitialized.removeListener(_onControllerUpdate);
     super.dispose();
   }
 
@@ -732,19 +815,31 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
         // Video
         if (_isInitialized)
           ValueListenableBuilder<int?>(
-            valueListenable: _controller.textureId,
+            valueListenable: widget.controller.textureId,
             builder: (context, textureId, _) {
               if (textureId != null) {
                 return SizedBox.expand(
                   child: FittedBox(
                     fit: BoxFit.cover,
                     child: SizedBox(
-                      width: _controller.availableQualities.value.isNotEmpty
-                          ? _controller.availableQualities.value.first.width
+                      width:
+                          widget.controller.availableQualities.value.isNotEmpty
+                          ? widget
+                                .controller
+                                .availableQualities
+                                .value
+                                .first
+                                .width
                                 .toDouble()
                           : 1080,
-                      height: _controller.availableQualities.value.isNotEmpty
-                          ? _controller.availableQualities.value.first.height
+                      height:
+                          widget.controller.availableQualities.value.isNotEmpty
+                          ? widget
+                                .controller
+                                .availableQualities
+                                .value
+                                .first
+                                .height
                                 .toDouble()
                           : 1920,
                       child: Texture(textureId: textureId),
@@ -769,10 +864,10 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
         // Play/Pause indicator (simple tap)
         GestureDetector(
           onTap: () {
-            if (_controller.isPlaying.value) {
-              _controller.pause();
+            if (widget.controller.isPlaying.value) {
+              widget.controller.pause();
             } else {
-              _controller.play();
+              widget.controller.play();
             }
           },
           behavior: HitTestBehavior.translucent,

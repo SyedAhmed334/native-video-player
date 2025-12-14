@@ -284,7 +284,7 @@ public class NativeVideoPlayerPlugin: NSObject, FlutterPlugin {
     
     // MARK: - Private Methods
     
-    private static let maxPlayers = 5
+    private static let maxPlayers = 24
     private var playerAccessOrder: [String] = []
     
     private func initialize(playerId: String, url: String, result: @escaping FlutterResult) {

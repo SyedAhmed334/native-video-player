@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'services/native_video_player_service.dart';
 import 'models/video_track_models.dart';
 import 'models/analytics_event.dart';
+import 'dart:async';
+
 import 'models/playback_error.dart';
 
 /// Controller for the Custom Video Player
@@ -174,11 +176,21 @@ class VideoPlayerController {
     log('[Analytics] ${event.type.name} at ${event.position.inSeconds}s');
   }
 
-  void initialize() {
+  Future<void> initialize() async {
+    // Create a completer to wait for the post frame callback
+    final completer = Completer<void>();
+
     // Defer player initialization to after the navigation animation completes
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializePlayer();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await _initializePlayer();
+        completer.complete();
+      } catch (e) {
+        completer.completeError(e);
+      }
     });
+
+    return completer.future;
   }
 
   void dispose() {
@@ -647,9 +659,8 @@ class VideoPlayerController {
                       quality.label,
                       style: TextStyle(
                         color: isSelected ? Colors.red : Colors.white,
-                        fontWeight: isSelected
-                            ? FontWeight.bold
-                            : FontWeight.normal,
+                        fontWeight:
+                            isSelected ? FontWeight.bold : FontWeight.normal,
                       ),
                     ),
                     subtitle: Text(
@@ -757,9 +768,8 @@ class VideoPlayerController {
                 'Off',
                 style: TextStyle(
                   color: selectedIndex == -1 ? Colors.red : Colors.white,
-                  fontWeight: selectedIndex == -1
-                      ? FontWeight.bold
-                      : FontWeight.normal,
+                  fontWeight:
+                      selectedIndex == -1 ? FontWeight.bold : FontWeight.normal,
                 ),
               ),
               onTap: () => setSubtitle(-1, context),
@@ -776,9 +786,8 @@ class VideoPlayerController {
                   subtitle.label,
                   style: TextStyle(
                     color: isSelected ? Colors.red : Colors.white,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
+                    fontWeight:
+                        isSelected ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
                 onTap: () => setSubtitle(index, context),
@@ -875,8 +884,8 @@ class VideoPlayerController {
                       vol == 0
                           ? Icons.volume_off
                           : vol < 0.5
-                          ? Icons.volume_down
-                          : Icons.volume_up,
+                              ? Icons.volume_down
+                              : Icons.volume_up,
                       color: Colors.white,
                       size: 32,
                     ),

@@ -32,7 +32,8 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         private const val TAG = "NativeVideoPlayerPlugin"
         
         // Maximum concurrent players to prevent memory exhaustion
-        private const val MAX_PLAYERS = 10
+        // Increased to 24 to handle fast scrolling where dispose is async
+        private const val MAX_PLAYERS = 24
     }
 
     private lateinit var methodChannel: MethodChannel
