@@ -205,7 +205,7 @@ extension VideoCacheManager: URLSessionDownloadDelegate {
             print("[VideoCacheManager] Prefetch complete: \(url)")
             
             // Trigger cleaning (ensure we stay within limits)
-            self?.cleanCacheIfNeeded()
+            self.cleanCacheIfNeeded()
         } catch {
             print("[VideoCacheManager] Failed to save file: \(error)")
         }
