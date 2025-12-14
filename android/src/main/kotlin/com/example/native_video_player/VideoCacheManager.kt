@@ -30,8 +30,8 @@ object VideoCacheManager {
     private var cache: SimpleCache? = null
     private var downloadDirectory: File? = null
     
-    // Default cache size: 100MB
-    private var maxCacheSizeBytes: Long = 100 * 1024 * 1024
+    // Default cache size: 400MB
+    private var maxCacheSizeBytes: Long = 400 * 1024 * 1024
     
     /**
      * Initialize the cache with custom size

@@ -17,6 +17,9 @@ class VideoCacheManager: NSObject {
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
     
+    // LRU Configuration
+    private let maxCacheSize: Int64 = 400 * 1024 * 1024 // 400MB
+    
     private override init() {
         // Create a subdirectory in Caches
         let paths = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
@@ -25,6 +28,7 @@ class VideoCacheManager: NSObject {
         super.init()
         
         createCacheDirectory()
+        cleanCacheIfNeeded() // Clean on startup
     }
     
     private func createCacheDirectory() {
@@ -38,11 +42,62 @@ class VideoCacheManager: NSObject {
         }
     }
     
+    /// Enforce LRU Cache Size
+    private func cleanCacheIfNeeded() {
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            guard let self = self else { return }
+            
+            do {
+                let resourceKeys: [URLResourceKey] = [.contentAccessDateKey, .fileSizeKey]
+                let fileUrls = try self.fileManager.contentsOfDirectory(at: self.cacheDirectory,
+                                                                      includingPropertiesForKeys: resourceKeys,
+                                                                      options: .skipsHiddenFiles)
+                
+                var currentSize: Int64 = 0
+                var files: [(url: URL, date: Date, size: Int64)] = []
+                
+                for url in fileUrls {
+                    let resources = try url.resourceValues(forKeys: Set(resourceKeys))
+                    if let size = resources.fileSize, let date = resources.contentAccessDate {
+                        currentSize += Int64(size)
+                        files.append((url, date, Int64(size)))
+                    }
+                }
+                
+                // If we are within limits, return
+                if currentSize <= self.maxCacheSize {
+                    return
+                }
+                
+                print("[VideoCacheManager] Cache size (\(currentSize / 1024 / 1024)MB) exceeds limit (\(self.maxCacheSize / 1024 / 1024)MB). Pruning...")
+                
+                // Sort by last access (oldest first)
+                files.sort { $0.date < $1.date }
+                
+                for file in files {
+                    if currentSize <= self.maxCacheSize {
+                        break
+                    }
+                    
+                    try self.fileManager.removeItem(at: file.url)
+                    currentSize -= file.size
+                    print("[VideoCacheManager] Evicted: \(file.url.lastPathComponent)")
+                }
+                
+            } catch {
+                print("[VideoCacheManager] Error during cache pruning: \(error)")
+            }
+        }
+    }
+    
     /// Get the local file URL for a given remote URL
     /// Returns nil if not cached
     func getCachedFile(for urlString: String) -> URL? {
         let fileUrl = getLocalFileUrl(for: urlString)
         if fileManager.fileExists(atPath: fileUrl.path) {
+            // Touch the file to update access time (for LRU)
+            // We verify specific file URLs so minimal overhead
+            try? (fileUrl as NSURL).setResourceValue(Date(), forKey: .contentAccessDateKey)
             return fileUrl
         }
         return nil
@@ -148,6 +203,9 @@ extension VideoCacheManager: URLSessionDownloadDelegate {
             try fileManager.moveItem(at: location, to: destinationUrl)
             
             print("[VideoCacheManager] Prefetch complete: \(url)")
+            
+            // Trigger cleaning (ensure we stay within limits)
+            self?.cleanCacheIfNeeded()
         } catch {
             print("[VideoCacheManager] Failed to save file: \(error)")
         }
