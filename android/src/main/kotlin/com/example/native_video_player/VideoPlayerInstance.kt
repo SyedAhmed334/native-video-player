@@ -16,6 +16,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.text.CueGroup
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -161,7 +162,12 @@ class VideoPlayerInstance(
             startPositionUpdates()
             
             android.util.Log.d(TAG, "[$playerId] Initialized with texture: ${textureEntry?.id()}, caching: $enableCaching")
-            textureEntry?.id() ?: -1L
+            val id = textureEntry?.id()
+            if (id == null) {
+                dispose()
+                return -1L
+            }
+            id
         } catch (e: Exception) {
             android.util.Log.e(TAG, "[$playerId] Initialization failed: ${e.message}", e)
             sendEvent(mapOf("event" to "error", "message" to "Initialization failed: ${e.message}"))
@@ -291,8 +297,14 @@ class VideoPlayerInstance(
             startPositionUpdates()
             
             android.util.Log.d(TAG, "[$playerId] Initialized with DRM ($drmType), texture: ${textureEntry?.id()}")
+            android.util.Log.d(TAG, "[$playerId] Initialized with DRM ($drmType), texture: ${textureEntry?.id()}")
             sendEvent(mapOf("event" to "drmInitialized", "type" to drmType))
-            textureEntry?.id() ?: -1L
+            val id = textureEntry?.id()
+            if (id == null) {
+                dispose()
+                return -1L
+            }
+            id
         } catch (e: Exception) {
             android.util.Log.e(TAG, "[$playerId] DRM initialization failed: ${e.message}", e)
             sendEvent(mapOf("event" to "error", "message" to "DRM initialization failed: ${e.message}"))
@@ -351,6 +363,7 @@ class VideoPlayerInstance(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                android.util.Log.w(TAG, "[$playerId] Player error: ${error.message}")
                 sendEvent(mapOf(
                     "event" to "error",
                     "message" to (error.message ?: "Unknown error")
@@ -368,6 +381,15 @@ class VideoPlayerInstance(
                 sendEvent(mapOf(
                     "event" to "subtitleText",
                     "text" to text.trim()
+                ))
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                sendEvent(mapOf(
+                    "event" to "videoSize",
+                    "width" to videoSize.width,
+                    "height" to videoSize.height,
+                    "rotation" to videoSize.unappliedRotationDegrees
                 ))
             }
         }
@@ -693,8 +715,18 @@ class VideoPlayerInstance(
     }
 
     private fun sendEvent(event: Map<String, Any>) {
+        if (isDisposed) return
+        
         eventSink?.let { sink ->
-            mainHandler.post { sink.success(event) }
+            mainHandler.post {
+                if (!isDisposed && eventSink != null) {
+                    try {
+                        sink.success(event)
+                    } catch (e: Exception) {
+                        // Ignore errors during fast scrolling/disposal
+                    }
+                }
+            }
         }
     }
 

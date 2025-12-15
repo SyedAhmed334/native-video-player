@@ -33,7 +33,9 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         
         // Maximum concurrent players to prevent memory exhaustion
         // Increased to 24 to handle fast scrolling where dispose is async
-        private const val MAX_PLAYERS = 24
+        // Limit concurrent players to 6 to prevent decoder exhaustion (black screens)
+        // and ensure smooth fast scrolling without hitting hardware limits.
+        private const val MAX_PLAYERS = 6
     }
 
     private lateinit var methodChannel: MethodChannel
@@ -583,6 +585,7 @@ class NativeVideoPlayerPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
             val player = players.remove(playerId)
             player?.dispose()
             
+            eventChannels[playerId]?.setStreamHandler(null)
             eventChannels.remove(playerId)
             playerAccessOrder.remove(playerId)
             

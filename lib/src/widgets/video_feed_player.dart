@@ -45,17 +45,45 @@ class VideoFeedPlayer extends StatefulWidget {
   State<VideoFeedPlayer> createState() => _VideoFeedPlayerState();
 }
 
-class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
+class _VideoFeedPlayerState extends State<VideoFeedPlayer>
+    with WidgetsBindingObserver {
   NativeVideoPlayer? _player;
-  int? _textureId;
-  bool _isPlaying = false;
-  bool _isInitialized = false;
+  final ValueNotifier<int?> _textureId = ValueNotifier(null);
+  final ValueNotifier<bool> _isPlaying = ValueNotifier(false);
+  final ValueNotifier<bool> _isInitialized = ValueNotifier(false);
+  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.isActive) {
       _initializePlayer();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    if (_player == null) return;
+
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        if (_isPlaying.value) {
+          _wasPlayingBeforeBackground = true;
+          _player?.pause();
+        }
+        break;
+      case AppLifecycleState.resumed:
+        if (_wasPlayingBeforeBackground && widget.isActive) {
+          _player?.play();
+          _wasPlayingBeforeBackground = false;
+        }
+        break;
+      default:
+        break;
     }
   }
 
@@ -81,6 +109,10 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _textureId.dispose();
+    _isPlaying.dispose();
+    _isInitialized.dispose();
     _releasePlayer();
     super.dispose();
   }
@@ -93,10 +125,8 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
 
     _player!.onInitialized = () {
       if (mounted) {
-        setState(() {
-          _textureId = _player!.textureId;
-          _isInitialized = true;
-        });
+        _textureId.value = _player!.textureId;
+        _isInitialized.value = true;
         if (widget.isActive) {
           _player!.play();
           if (widget.muted) {
@@ -108,9 +138,7 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
 
     _player!.onPlaybackStateChanged = (playing) {
       if (mounted) {
-        setState(() {
-          _isPlaying = playing;
-        });
+        _isPlaying.value = playing;
       }
     };
 
@@ -131,11 +159,9 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
       await PlayerManager.instance.release(playerId);
       _player = null;
       if (mounted) {
-        setState(() {
-          _textureId = null;
-          _isInitialized = false;
-          _isPlaying = false;
-        });
+        _textureId.value = null;
+        _isInitialized.value = false;
+        _isPlaying.value = false;
       }
     }
   }
@@ -143,7 +169,7 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
   void _togglePlayPause() {
     if (_player == null) return;
 
-    if (_isPlaying) {
+    if (_isPlaying.value) {
       _player!.pause();
     } else {
       _player!.play();
@@ -162,32 +188,56 @@ class _VideoFeedPlayerState extends State<VideoFeedPlayer> {
           fit: StackFit.expand,
           children: [
             // Video texture
-            if (_isInitialized && _textureId != null)
-              Texture(textureId: _textureId!)
-            else
-              const Center(
-                child: CircularProgressIndicator(
-                  color: Colors.white,
-                  strokeWidth: 2,
-                ),
-              ),
+            ValueListenableBuilder<bool>(
+              valueListenable: _isInitialized,
+              builder: (context, isInitialized, _) {
+                if (!isInitialized) {
+                  return const Center(
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2,
+                    ),
+                  );
+                }
+                return ValueListenableBuilder<int?>(
+                  valueListenable: _textureId,
+                  builder: (context, textureId, _) {
+                    if (textureId == null) {
+                      return const SizedBox();
+                    }
+                    return Texture(textureId: textureId);
+                  },
+                );
+              },
+            ),
 
             // Play/Pause indicator
-            if (_isInitialized && !_isPlaying)
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.black45,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.play_arrow,
-                    color: Colors.white,
-                    size: 48,
-                  ),
-                ),
-              ),
+            ValueListenableBuilder<bool>(
+              valueListenable: _isInitialized,
+              builder: (context, isInitialized, _) {
+                if (!isInitialized) return const SizedBox();
+                return ValueListenableBuilder<bool>(
+                  valueListenable: _isPlaying,
+                  builder: (context, isPlaying, _) {
+                    if (isPlaying) return const SizedBox();
+                    return Center(
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.black45,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.play_arrow,
+                          color: Colors.white,
+                          size: 48,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
 
             // Custom overlay
             if (widget.overlay != null) widget.overlay!,

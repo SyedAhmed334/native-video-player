@@ -534,6 +534,21 @@ class VideoPlayerInstance: NSObject {
             ])
         }
         
+        // Video size observer
+        let sizeObserver = item.observe(\.presentationSize) { [weak self] item, _ in
+            guard let self = self else { return }
+            let size = item.presentationSize
+            if size != .zero {
+                self.sendEvent([
+                    "event": "videoSize",
+                    "width": size.width,
+                    "height": size.height,
+                    "rotation": 0 // presentationSize already accounts for rotation on iOS
+                ])
+            }
+        }
+        playerObservers.append(sizeObserver)
+        
         // End notification
         NotificationCenter.default.addObserver(
             self,
@@ -640,7 +655,8 @@ class VideoPlayerInstance: NSObject {
     
     private func sendEvent(_ event: [String: Any]) {
         DispatchQueue.main.async { [weak self] in
-            self?.eventSink?(event)
+            guard let self = self, !self.isDisposed else { return }
+            self.eventSink?(event)
         }
     }
 }

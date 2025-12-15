@@ -23,10 +23,10 @@ class VideoPlayerController {
     this.autoPlay = true,
     this.playerId,
     this.analyticsConfig = const AnalyticsConfig(),
-  });
+  }) : _nativePlayer = NativeVideoPlayer.create(id: playerId);
 
   // Native player instance
-  late NativeVideoPlayer _nativePlayer;
+  final NativeVideoPlayer _nativePlayer;
   NativeVideoPlayer get nativePlayer => _nativePlayer;
 
   // Reactive state variables
@@ -232,7 +232,7 @@ class VideoPlayerController {
     isLoading.value = true;
 
     // Create player with unique ID for multi-instance support
-    _nativePlayer = NativeVideoPlayer.create(id: playerId);
+    // _nativePlayer created in constructor now
 
     // Set up callbacks
     _nativePlayer.onInitialized = () {
@@ -323,6 +323,30 @@ class VideoPlayerController {
             play();
           }
         });
+      }
+    };
+
+    _nativePlayer.onVideoSizeChanged = (width, height, rotation) {
+      log('[Player] Video size changed: ${width}x$height r:$rotation');
+      if (availableQualities.value.isEmpty) {
+        int finalWidth = width.toInt();
+        int finalHeight = height.toInt();
+
+        // Handle rotation for aspect ratio
+        if (rotation == 90 || rotation == 270) {
+          finalWidth = height.toInt();
+          finalHeight = width.toInt();
+        }
+
+        availableQualities.value = [
+          VideoQuality(
+            index: 0,
+            width: finalWidth,
+            height: finalHeight,
+            bitrate: 0,
+            label: 'Auto',
+          ),
+        ];
       }
     };
 

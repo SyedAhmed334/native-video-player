@@ -4,8 +4,8 @@ import '../models/video_player_theme.dart';
 import '../models/video_player_config.dart';
 
 /// Signature for building custom controls overlay
-typedef CustomControlsBuilder =
-    Widget Function(BuildContext context, VideoPlayerController controller);
+typedef CustomControlsBuilder = Widget Function(
+    BuildContext context, VideoPlayerController controller);
 
 /// Custom video player widget with Netflix-smooth controls
 /// Handles app lifecycle (pause on background) and graceful disposal
@@ -535,8 +535,8 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
                     return Slider(
                       value: controller.duration.value.inMilliseconds > 0
                           ? (controller.position.value.inMilliseconds /
-                                    controller.duration.value.inMilliseconds)
-                                .clamp(0.0, 1.0)
+                                  controller.duration.value.inMilliseconds)
+                              .clamp(0.0, 1.0)
                           : 0.0,
 
                       /// When user starts dragging
@@ -571,7 +571,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
                   },
                 ),
               ),
-
               ValueListenableBuilder<Duration>(
                 valueListenable: controller.duration,
                 builder: (context, duration, _) {
@@ -638,10 +637,8 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer>
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
-                        controller
-                            .availableQualities
-                            .value[controller.selectedQualityIndex.value]
-                            .label,
+                        controller.availableQualities
+                            .value[controller.selectedQualityIndex.value].label,
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
@@ -726,9 +723,8 @@ class _DoubleTapSeekAnimationState extends State<_DoubleTapSeekAnimation>
       animation: _controller,
       builder: (context, child) {
         return Stack(
-          alignment: widget.isForward
-              ? Alignment.centerLeft
-              : Alignment.centerRight,
+          alignment:
+              widget.isForward ? Alignment.centerLeft : Alignment.centerRight,
           children: [
             // Ripple effect background
             Positioned.fill(

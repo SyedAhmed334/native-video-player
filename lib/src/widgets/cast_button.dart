@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../services/cast_service.dart';
 import '../models/cast_config.dart';
 
@@ -39,9 +38,9 @@ class CastButton extends StatefulWidget {
 
 class _CastButtonState extends State<CastButton> {
   late CastService _castService;
-  List<CastDevice> _devices = [];
-  bool _isSearching = false;
-  CastState _state = CastState.notConnected;
+  final ValueNotifier<List<CastDevice>> _devices = ValueNotifier([]);
+  final ValueNotifier<bool> _isSearching = ValueNotifier(false);
+  final ValueNotifier<CastState> _state = ValueNotifier(CastState.notConnected);
 
   @override
   void initState() {
@@ -50,22 +49,28 @@ class _CastButtonState extends State<CastButton> {
     _initCast();
   }
 
+  @override
+  void dispose() {
+    _devices.dispose();
+    _isSearching.dispose();
+    _state.dispose();
+    super.dispose();
+  }
+
   Future<void> _initCast() async {
     await _castService.initialize();
     _castService.onCastStateChanged = (state, device) {
-      setState(() => _state = state);
+      _state.value = state;
       widget.onStateChanged?.call(state, device);
     };
   }
 
   Future<void> _scanForDevices() async {
-    setState(() => _isSearching = true);
+    _isSearching.value = true;
 
     final devices = await _castService.getDevices();
-    setState(() {
-      _devices = devices;
-      _isSearching = false;
-    });
+    _devices.value = devices;
+    _isSearching.value = false;
 
     widget.onDevicesFound?.call(devices);
 
@@ -81,16 +86,21 @@ class _CastButtonState extends State<CastButton> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => _DevicePickerSheet(
-        devices: _devices,
-        state: _state,
-        onDeviceSelected: (device) {
-          Navigator.pop(context);
-          _connectToDevice(device);
-        },
-        onDisconnect: () {
-          Navigator.pop(context);
-          _castService.disconnect();
+      builder: (context) => ValueListenableBuilder<CastState>(
+        valueListenable: _state,
+        builder: (context, state, _) {
+          return _DevicePickerSheet(
+            devices: _devices.value,
+            state: state,
+            onDeviceSelected: (device) {
+              Navigator.pop(context);
+              _connectToDevice(device);
+            },
+            onDisconnect: () {
+              Navigator.pop(context);
+              _castService.disconnect();
+            },
+          );
         },
       ),
     );
@@ -103,16 +113,21 @@ class _CastButtonState extends State<CastButton> {
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      icon: _buildIcon(),
-      onPressed: _isSearching ? null : _scanForDevices,
-      iconSize: widget.size,
-      color: widget.color,
+    return ValueListenableBuilder<bool>(
+      valueListenable: _isSearching,
+      builder: (context, isSearching, child) {
+        return IconButton(
+          icon: _buildIcon(isSearching),
+          onPressed: isSearching ? null : _scanForDevices,
+          iconSize: widget.size,
+          color: widget.color,
+        );
+      },
     );
   }
 
-  Widget _buildIcon() {
-    if (_isSearching) {
+  Widget _buildIcon(bool isSearching) {
+    if (isSearching) {
       return SizedBox(
         width: widget.size,
         height: widget.size,
@@ -123,16 +138,21 @@ class _CastButtonState extends State<CastButton> {
       );
     }
 
-    switch (_state) {
-      case CastState.connected:
-      case CastState.playing:
-      case CastState.paused:
-        return Icon(Icons.cast_connected, color: widget.color);
-      case CastState.connecting:
-        return Icon(Icons.cast, color: widget.color.withOpacity(0.5));
-      default:
-        return Icon(Icons.cast, color: widget.color);
-    }
+    return ValueListenableBuilder<CastState>(
+      valueListenable: _state,
+      builder: (context, state, _) {
+        switch (state) {
+          case CastState.connected:
+          case CastState.playing:
+          case CastState.paused:
+            return Icon(Icons.cast_connected, color: widget.color);
+          case CastState.connecting:
+            return Icon(Icons.cast, color: widget.color.withOpacity(0.5));
+          default:
+            return Icon(Icons.cast, color: widget.color);
+        }
+      },
+    );
   }
 }
 

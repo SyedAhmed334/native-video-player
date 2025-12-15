@@ -284,7 +284,7 @@ public class NativeVideoPlayerPlugin: NSObject, FlutterPlugin {
     
     // MARK: - Private Methods
     
-    private static let maxPlayers = 24
+    private static let maxPlayers = 6
     private var playerAccessOrder: [String] = []
     
     private func initialize(playerId: String, url: String, result: @escaping FlutterResult) {
@@ -432,6 +432,7 @@ public class NativeVideoPlayerPlugin: NSObject, FlutterPlugin {
         let player = players.removeValue(forKey: playerId)
         player?.dispose()
         
+        eventChannels[playerId]?.setStreamHandler(nil)
         eventChannels.removeValue(forKey: playerId)
         playerAccessOrder.removeAll { $0 == playerId }
         

@@ -30,9 +30,12 @@ class NativeVideoPlayer {
     return NativeVideoPlayer._(id: playerId);
   }
 
+  static int _instanceCount = 0;
+
   /// Generate unique player ID
   static String _generateId() {
-    return 'player_${DateTime.now().millisecondsSinceEpoch}';
+    _instanceCount++;
+    return 'player_${DateTime.now().millisecondsSinceEpoch}_$_instanceCount';
   }
 
   // === Static Cache Management Methods ===
@@ -131,6 +134,7 @@ class NativeVideoPlayer {
   Function(int attempt, int maxRetries)? onRetrying;
   Function(bool isConnected, String type)? onNetworkChanged;
   Function(bool isActive)? onPiPChanged;
+  Function(double width, double height, double rotation)? onVideoSizeChanged;
 
   // Getters
   int? get textureId => _textureId;
@@ -183,7 +187,7 @@ class NativeVideoPlayer {
       _isRetrying = false;
 
       _startEventListener();
-      await setVolume(1.0);
+      await setVolume(_volume);
 
       log('[NativeVideoPlayer:$id] Initialized with texture: $_textureId');
       onInitialized?.call();
@@ -299,12 +303,14 @@ class NativeVideoPlayer {
 
   /// Set volume (0.0 to 1.0)
   Future<void> setVolume(double volume) async {
+    _volume = volume.clamp(0.0, 1.0);
+    if (!_isInitialized) return;
+
     try {
       await _methodChannel.invokeMethod(
         'setVolume',
-        _withPlayerId({'volume': volume.clamp(0.0, 1.0)}),
+        _withPlayerId({'volume': _volume}),
       );
-      _volume = volume.clamp(0.0, 1.0);
     } catch (e) {
       onError?.call('Failed to set volume: $e');
     }
@@ -629,6 +635,11 @@ class NativeVideoPlayer {
     } else if (eventType == 'pipChanged') {
       _isPiPActive = event['isActive'] as bool;
       onPiPChanged?.call(_isPiPActive);
+    } else if (eventType == 'videoSize') {
+      final width = (event['width'] as num).toDouble();
+      final height = (event['height'] as num).toDouble();
+      final rotation = (event['rotation'] as num?)?.toDouble() ?? 0.0;
+      onVideoSizeChanged?.call(width, height, rotation);
     }
   }
 }
